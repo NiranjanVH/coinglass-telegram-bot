@@ -19,9 +19,17 @@ TARGET_URL = (
     "LiquidationHeatMap?coin=BTC&type=pair"
 )
 
+STORAGE_STATE = "coinglass_state.json"
+
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/120.0.0.0 Safari/537.36"
+)
+
 
 def format_volume(value):
-    """Format liquidation volume using K, M, B."""
+    """Use K, M and B for liquidation volume only."""
 
     if value >= 1_000_000_000:
         return f"${value / 1_000_000_000:.2f}B"
@@ -35,39 +43,10 @@ def format_volume(value):
     return f"${value:.2f}"
 
 
-async def print_diagnostics(page, response):
+def format_price(value):
+    """Always show actual BTC price, never K/M/B."""
 
-    print("\n========== PAGE DIAGNOSTICS ==========")
-
-    print("URL:", page.url)
-    print("TITLE:", await page.title())
-
-    print(
-        "HTTP STATUS:",
-        response.status if response else "Unknown"
-    )
-
-    try:
-        body_text = await page.locator("body").inner_text()
-
-        print("\nPAGE CONTENT:")
-        print(body_text[:5000])
-
-    except Exception as e:
-        print("Could not read page content:", e)
-
-    try:
-        await page.screenshot(
-            path="debug.png",
-            full_page=True
-        )
-
-        print("\nScreenshot saved: debug.png")
-
-    except Exception as e:
-        print("Screenshot error:", e)
-
-    print("========== END DIAGNOSTICS ==========\n")
+    return f"${value:,.2f}"
 
 
 async def main():
@@ -77,18 +56,59 @@ async def main():
         print("Launching Chromium...")
 
         browser = await p.chromium.launch(
-            headless=True
+            headless=True,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+            ]
         )
 
-        context = await browser.new_context(
-            storage_state="coinglass_state.json",
-            viewport={
+        context_options = {
+            "viewport": {
                 "width": 1400,
-                "height": 900
-            }
+                "height": 900,
+            },
+            "user_agent": USER_AGENT,
+            "locale": "en-US",
+            "timezone_id": "UTC",
+            "ignore_https_errors": False,
+        }
+
+        # Reuse saved CoinGlass login session if available.
+        if os.path.exists(STORAGE_STATE):
+            context_options["storage_state"] = STORAGE_STATE
+            print("Loading saved CoinGlass session...")
+        else:
+            print(
+                "WARNING: No saved CoinGlass session found."
+            )
+
+        context = await browser.new_context(
+            **context_options
         )
 
         page = await context.new_page()
+
+        # Apply the initialization script BEFORE loading CoinGlass.
+        await page.add_init_script("""
+            window.__echarts_instances =
+                window.__echarts_instances || [];
+
+            let _echarts = undefined;
+
+            Object.defineProperty(window, 'echarts', {
+                get: function() {
+                    return _echarts;
+                },
+                set: function(val) {
+                    _echarts = val;
+                    window._globalEcharts = val;
+                },
+                configurable: true
+            });
+        """)
 
         try:
 
@@ -100,64 +120,63 @@ async def main():
                 timeout=60000
             )
 
+            status = (
+                response.status
+                if response
+                else None
+            )
+
             print("URL:", page.url)
             print("TITLE:", await page.title())
-
-            print(
-                "HTTP STATUS:",
-                response.status if response else "Unknown"
-            )
+            print("HTTP STATUS:", status)
 
             print("Waiting for page initialization...")
 
-            await asyncio.sleep(15)
+            await asyncio.sleep(10)
 
-            await print_diagnostics(page, response)
+            # Save diagnostics before attempting extraction.
+            await page.screenshot(
+                path="debug.png",
+                full_page=True
+            )
 
-            # Detect an actual HTTP error before waiting for chart
-            if response and response.status >= 400:
+            page_content = (
+                await page.locator("body").inner_text()
+            )
+
+            print("\nPAGE CONTENT:")
+            print(page_content[:3000])
+
+            # Stop immediately if CoinGlass returns an HTTP error.
+            if status and status >= 400:
 
                 raise RuntimeError(
-                    f"CoinGlass returned HTTP {response.status}. "
+                    f"CoinGlass returned HTTP {status}. "
                     "The chart cannot be extracted. "
-                    "Check debug.png and page diagnostics."
+                    "Check debug.png and browser session."
                 )
 
-            # Check for chart
+            # Wait for the actual chart.
             print("Waiting for chart...")
 
-            try:
+            await page.wait_for_selector(
+                ".echarts-for-react",
+                state="visible",
+                timeout=60000
+            )
 
-                await page.wait_for_selector(
-                    ".echarts-for-react",
-                    state="visible",
-                    timeout=45000
-                )
+            print("Chart detected!")
 
-            except Exception:
-
-                print("Chart not detected.")
-
-                await print_diagnostics(page, response)
-
-                raise RuntimeError(
-                    "CoinGlass chart unavailable. "
-                    "Check debug.png and page diagnostics."
-                )
-
-            print("Chart detected.")
-
-            # Select 48-hour timeframe
+            # Select 48-hour timeframe.
             print("Selecting 48-hour timeframe...")
 
             await select_48h_timeframe(page)
 
-            # Allow chart to hydrate
-            print("Waiting 60 seconds for chart hydration...")
+            print("Waiting for chart hydration...")
 
-            await asyncio.sleep(60)
+            await asyncio.sleep(10)
 
-            # Extract chart data with retries
+            # Extract chart data with retries.
             raw_data = None
 
             for attempt in range(1, 7):
@@ -170,11 +189,18 @@ async def main():
                     JS_EXTRACT_SCRIPT
                 )
 
-                if candidate and not candidate.get("error"):
+                if (
+                    candidate
+                    and not candidate.get("error")
+                ):
 
-                    x_axis = candidate.get("xAxis", [])
+                    x_axis = candidate.get(
+                        "xAxis", []
+                    )
 
-                    series = candidate.get("series", [])
+                    series = candidate.get(
+                        "series", []
+                    )
 
                     candle = next(
                         (
@@ -196,19 +222,24 @@ async def main():
                         x_axis
                         and candle
                         and heatmap
-                        and len(candle.get("data", [])) >= len(x_axis)
+                        and len(candle.get("data", []))
+                        >= len(x_axis)
                         and len(heatmap.get("data", [])) > 0
                     ):
 
                         raw_data = candidate
 
-                        print("Valid chart data detected.")
+                        print(
+                            "Valid chart data detected!"
+                        )
 
                         break
 
                     else:
 
-                        print("Chart data incomplete.")
+                        print(
+                            "Chart data incomplete."
+                        )
 
                 else:
 
@@ -221,22 +252,46 @@ async def main():
 
             if raw_data is None:
 
+                await page.screenshot(
+                    path="extraction_error.png",
+                    full_page=True
+                )
+
                 raise RuntimeError(
                     "Chart data did not become ready."
                 )
 
-            # Save extracted chart data
-            with open(JSON_FILENAME, "w") as f:
+            # Save chart data.
+            with open(
+                JSON_FILENAME,
+                "w",
+                encoding="utf-8"
+            ) as f:
 
-                json.dump(raw_data, f)
+                json.dump(
+                    raw_data,
+                    f
+                )
 
-            print("Chart data saved.")
+            print("Chart data saved successfully.")
+
+            # Refresh saved login state if possible.
+            try:
+                await context.storage_state(
+                    path=STORAGE_STATE
+                )
+                print("Login session saved.")
+            except Exception as e:
+                print("Could not save session:", e)
 
         finally:
 
             await browser.close()
 
-    # Process extracted data
+    # ==========================================
+    # PROCESS LIQUIDATION DATA
+    # ==========================================
+
     print("Processing liquidation data...")
 
     data = process_latest_column_from_json()
@@ -247,10 +302,10 @@ async def main():
             "No liquidation data processed."
         )
 
-    if not data["whale_orders"]:
+    if not data.get("whale_orders"):
 
         raise RuntimeError(
-            "No whale orders found."
+            "No liquidation orders found."
         )
 
     orders = data["whale_orders"]
@@ -259,24 +314,10 @@ async def main():
         f"Liquidation orders found: {len(orders)}"
     )
 
-    # Find highest and second-highest volumes
-    sorted_volumes = sorted(
-        [
-            order["volume"]
-            for order in orders
-        ],
-        reverse=True
-    )
+    # ==========================================
+    # PREPARE TELEGRAM MESSAGE
+    # ==========================================
 
-    highest_vol = sorted_volumes[0]
-
-    second_highest_vol = (
-        sorted_volumes[1]
-        if len(sorted_volumes) > 1
-        else 0
-    )
-
-    # Telegram header
     lines = [
 
         "<b>⚡ COINGLASS BTC | 48H</b>",
@@ -285,83 +326,114 @@ async def main():
 
         f"🕒 {data['timestamp']}",
 
-        f"💰 Price: ${data['price']:,.2f}",
+        f"💰 Price: {format_price(data['price'])}",
 
-        f"🔺 High: ${data['candle']['high']:,.2f}",
+        f"🔺 High: {format_price(data['candle']['high'])}",
 
-        f"🔻 Low: ${data['candle']['low']:,.2f}",
+        f"🔻 Low: {format_price(data['candle']['low'])}",
 
         "",
 
         "<b>🐋 LIQUIDATION WALLS</b>",
 
-        ""
+        "",
     ]
+
+    # Find highest and second-highest volumes.
+    sorted_volumes = sorted(
+        (
+            order["volume"]
+            for order in orders
+        ),
+        reverse=True
+    )
+
+    highest_vol = (
+        sorted_volumes[0]
+        if sorted_volumes
+        else 0
+    )
+
+    second_highest_vol = (
+        sorted_volumes[1]
+        if len(sorted_volumes) > 1
+        else 0
+    )
 
     separator_inserted = False
 
     for order in orders:
 
-        # Active price separator
+        # Insert active BTC price between
+        # short and long liquidation levels.
         if (
             not separator_inserted
             and order["price"] < data["price"]
         ):
 
             lines.extend([
-
-                f"<b>━━ ACTIVE: ${data['price']:,.2f} ━━</b>",
-
-                ""
+                "",
+                (
+                    f"<b>━━ ACTIVE: "
+                    f"{format_price(data['price'])} ━━</b>"
+                ),
+                "",
             ])
 
             separator_inserted = True
 
-        # LONG / SHORT indicator
+        # Compact liquidation side.
         if order["side"] == "LONG LIQ":
 
-            indicator = "🟢 L"
+            side = "🟢 L"
 
         else:
 
-            indicator = "🔴 S"
+            side = "🔴 S"
 
-        # Volume ranking
+        # Highest-volume indicators.
         rank = ""
 
-        if order["volume"] == highest_vol:
+        if (
+            highest_vol > 0
+            and order["volume"] == highest_vol
+        ):
 
             rank = " ⭐ 1ST"
 
         elif (
-            order["volume"] == second_highest_vol
-            and second_highest_vol > 0
+            second_highest_vol > 0
+            and order["volume"] == second_highest_vol
         ):
 
             rank = " 🥈 2ND"
 
-        # Single-line liquidation record
+        # ONE LINE PER RECORD.
         lines.append(
-            f"{indicator} "
-            f"${order['price']:,.2f} | "
-            f"{format_volume(order['volume'])}"
+            f"{side} "
+            f"{format_price(order['price'])} "
+            f"| {format_volume(order['volume'])}"
             f"{rank}"
         )
 
-    # Add active price if no lower-priced order exists
+    # Add active price if no lower-priced order exists.
     if not separator_inserted:
 
         lines.extend([
-
             "",
-
-            f"<b>━━ ACTIVE: ${data['price']:,.2f} ━━</b>"
+            (
+                f"<b>━━ ACTIVE: "
+                f"{format_price(data['price'])} ━━</b>"
+            ),
         ])
 
     message = "\n".join(lines)
 
-    # Telegram delivery
-    print("Sending Telegram message...")
+    # ==========================================
+    # SEND TELEGRAM MESSAGE
+    # ==========================================
+
+    print("\nSending Telegram message...")
 
     token = os.environ["TELEGRAM_BOT_TOKEN"]
 
@@ -373,7 +445,8 @@ async def main():
         json={
             "chat_id": chat_id,
             "text": message,
-            "parse_mode": "HTML"
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
         },
 
         timeout=30
@@ -390,8 +463,11 @@ async def main():
         )
 
     print(
-        f"Telegram message sent successfully! "
-        f"{len(orders)} orders included."
+        "Telegram message sent successfully!"
+    )
+
+    print(
+        f"Total liquidation records sent: {len(orders)}"
     )
 
 

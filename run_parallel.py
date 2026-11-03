@@ -863,15 +863,20 @@ async def scrape_market(market, target_url):
 # CONSOLIDATED LIQUIDATION MESSAGE
 # ==================================================
 
+
+# ==================================================
+# CONSOLIDATED LIQUIDATION MESSAGE
+# TOP 2 SHORT + TOP 2 LONG PER MARKET / TIMEFRAME
+# ==================================================
+
 def build_consolidated_message(all_results):
 
     above_orders = []
     below_orders = []
 
-    active_price = None
+    active_prices = []
 
     timeframe_order = ["48H", "12H", "24H", "3D"]
-
     market_order = ["SYMBOL", "PAIR"]
 
     for market in market_order:
@@ -884,123 +889,151 @@ def build_consolidated_message(all_results):
 
             result = market_data.get(timeframe)
 
+            # Skip failed or unavailable scrapers.
             if result is None or isinstance(result, BaseException):
                 continue
 
             current_price = result["price"]
 
-            active_price = current_price
+            active_prices.append(current_price)
 
             orders = result.get("whale_orders", [])
 
             if not orders:
                 continue
 
-            # Strongest SHORT liquidation wall above price.
-            short_orders = [
-                order for order in orders
-                if order["side"] == "SHORT LIQ"
-            ]
+            # ------------------------------------------
+            # GET ALL SHORT LIQUIDATION WALLS
+            # ------------------------------------------
 
-            # Strongest LONG liquidation wall below price.
-            long_orders = [
-                order for order in orders
-                if order["side"] == "LONG LIQ"
-            ]
+            short_orders = sorted(
+                [
+                    order for order in orders
+                    if order["side"] == "SHORT LIQ"
+                ],
+                key=lambda order: order["volume"],
+                reverse=True
+            )[:2]
 
-            if short_orders:
+            # ------------------------------------------
+            # GET ALL LONG LIQUIDATION WALLS
+            # ------------------------------------------
 
-                strongest_short = max(
-                    short_orders,
-                    key=lambda order: order["volume"]
-                )
+            long_orders = sorted(
+                [
+                    order for order in orders
+                    if order["side"] == "LONG LIQ"
+                ],
+                key=lambda order: order["volume"],
+                reverse=True
+            )[:2]
+
+            # ------------------------------------------
+            # STORE TOP 2 SHORT WALLS
+            # ------------------------------------------
+
+            for order in short_orders:
 
                 above_orders.append({
+
                     "market": prefix,
                     "timeframe": timeframe,
-                    "price": strongest_short["price"],
-                    "volume": strongest_short["volume"],
-                    "diff": strongest_short["price"] - current_price,
+                    "price": order["price"],
+                    "volume": order["volume"],
                     "side": "SHORT"
+
                 })
 
-            if long_orders:
+            # ------------------------------------------
+            # STORE TOP 2 LONG WALLS
+            # ------------------------------------------
 
-                strongest_long = max(
-                    long_orders,
-                    key=lambda order: order["volume"]
-                )
+            for order in long_orders:
 
                 below_orders.append({
+
                     "market": prefix,
                     "timeframe": timeframe,
-                    "price": strongest_long["price"],
-                    "volume": strongest_long["volume"],
-                    "diff": strongest_long["price"] - current_price,
+                    "price": order["price"],
+                    "volume": order["volume"],
                     "side": "LONG"
+
                 })
 
-    if active_price is None:
+    # ------------------------------------------
+    # CHECK IF ANY DATA IS AVAILABLE
+    # ------------------------------------------
+
+    if not active_prices:
         return None
 
-    lines = [
+    # Use the average current price across successful
+    # scraper results for a consolidated reference price.
+    active_price = sum(active_prices) / len(active_prices)
 
-        "<b>🐋 BTC CONSOLIDATED LIQUIDATION WALLS</b>",
+    # ------------------------------------------
+    # SORT SHORT WALLS BY VOLUME
+    # ------------------------------------------
 
-        ""
-
-    ]
-
-    # Sort SHORT walls by volume.
     above_orders.sort(
         key=lambda order: order["volume"],
         reverse=True
     )
 
-    # Sort LONG walls by volume.
+    # ------------------------------------------
+    # SORT LONG WALLS BY VOLUME
+    # ------------------------------------------
+
     below_orders.sort(
         key=lambda order: order["volume"],
         reverse=True
     )
 
-    # SHORT liquidation walls.
+    # ------------------------------------------
+    # BUILD TELEGRAM MESSAGE
+    # ------------------------------------------
+
+    lines = [
+
+        "<b>🐋 BTC CONSOLIDATED LIQUIDATION WALLS</b>",
+        ""
+
+    ]
+
+    # SHORT liquidation walls (above current price).
+
     for order in above_orders:
 
         lines.append(
-
             f"🔴 <b>S</b> "
-            f"+${order['diff']:,.0f} | "
+            f"${order['price']:,.0f} | "
             f"{format_volume(order['volume'])} | "
             f"{order['market']}{order['timeframe']}"
-
         )
 
-        lines.append("")
+    # ACTIVE PRICE SEPARATOR.
 
-    # Active BTC price separator.
     lines.extend([
 
+        "",
         f"<b>━━ ACTIVE: ${active_price:,.2f} ━━</b>",
-
         ""
 
     ])
 
-    # LONG liquidation walls.
+    # LONG liquidation walls (below current price).
+
     for order in below_orders:
 
         lines.append(
-
             f"🟢 <b>L</b> "
-            f"-${abs(order['diff']):,.0f} | "
+            f"${order['price']:,.0f} | "
             f"{format_volume(order['volume'])} | "
             f"{order['market']}{order['timeframe']}"
-
         )
 
-        lines.append("")
+    return "\n".join(lines)
 
-    return "\n".join(lines).strip()
 
 
 # ==================================================

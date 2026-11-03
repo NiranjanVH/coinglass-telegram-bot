@@ -1,0 +1,38 @@
+
+name: CoinGlass Telegram Scraper
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Restore CoinGlass session
+        env:
+          SESSION: ${{ secrets.COINGLASS_STATE_B64 }}
+        run: |
+          echo "$SESSION" | base64 -d > coinglass_state.json
+
+      - name: Run scraper and send Telegram signal
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python run_once.py

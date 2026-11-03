@@ -858,8 +858,202 @@ async def scrape_market(market, target_url):
             print(f"[{market}] Browser closed.")
 
 
+
 # ==================================================
-# MAIN - EIGHT SCRAPERS
+# CONSOLIDATED LIQUIDATION MESSAGE
+# ==================================================
+
+def build_consolidated_message(all_results):
+
+    above_orders = []
+    below_orders = []
+
+    active_price = None
+
+    timeframe_order = ["48H", "12H", "24H", "3D"]
+
+    market_order = ["SYMBOL", "PAIR"]
+
+    for market in market_order:
+
+        market_data = all_results.get(market, {})
+
+        prefix = "S" if market == "SYMBOL" else "P"
+
+        for timeframe in timeframe_order:
+
+            result = market_data.get(timeframe)
+
+            if result is None or isinstance(result, BaseException):
+                continue
+
+            current_price = result["price"]
+
+            active_price = current_price
+
+            orders = result.get("whale_orders", [])
+
+            if not orders:
+                continue
+
+            # Strongest SHORT liquidation wall above price.
+            short_orders = [
+                order for order in orders
+                if order["side"] == "SHORT LIQ"
+            ]
+
+            # Strongest LONG liquidation wall below price.
+            long_orders = [
+                order for order in orders
+                if order["side"] == "LONG LIQ"
+            ]
+
+            if short_orders:
+
+                strongest_short = max(
+                    short_orders,
+                    key=lambda order: order["volume"]
+                )
+
+                above_orders.append({
+                    "market": prefix,
+                    "timeframe": timeframe,
+                    "price": strongest_short["price"],
+                    "volume": strongest_short["volume"],
+                    "diff": strongest_short["price"] - current_price,
+                    "side": "SHORT"
+                })
+
+            if long_orders:
+
+                strongest_long = max(
+                    long_orders,
+                    key=lambda order: order["volume"]
+                )
+
+                below_orders.append({
+                    "market": prefix,
+                    "timeframe": timeframe,
+                    "price": strongest_long["price"],
+                    "volume": strongest_long["volume"],
+                    "diff": strongest_long["price"] - current_price,
+                    "side": "LONG"
+                })
+
+    if active_price is None:
+        return None
+
+    lines = [
+
+        "<b>🐋 BTC CONSOLIDATED LIQUIDATION WALLS</b>",
+
+        ""
+
+    ]
+
+    # Sort SHORT walls by volume.
+    above_orders.sort(
+        key=lambda order: order["volume"],
+        reverse=True
+    )
+
+    # Sort LONG walls by volume.
+    below_orders.sort(
+        key=lambda order: order["volume"],
+        reverse=True
+    )
+
+    # SHORT liquidation walls.
+    for order in above_orders:
+
+        lines.append(
+
+            f"🔴 <b>S</b> "
+            f"+${order['diff']:,.0f} | "
+            f"{format_volume(order['volume'])} | "
+            f"{order['market']}{order['timeframe']}"
+
+        )
+
+        lines.append("")
+
+    # Active BTC price separator.
+    lines.extend([
+
+        f"<b>━━ ACTIVE: ${active_price:,.2f} ━━</b>",
+
+        ""
+
+    ])
+
+    # LONG liquidation walls.
+    for order in below_orders:
+
+        lines.append(
+
+            f"🟢 <b>L</b> "
+            f"-${abs(order['diff']):,.0f} | "
+            f"{format_volume(order['volume'])} | "
+            f"{order['market']}{order['timeframe']}"
+
+        )
+
+        lines.append("")
+
+    return "\n".join(lines).strip()
+
+
+# ==================================================
+# SEND CONSOLIDATED TELEGRAM MESSAGE
+# ==================================================
+
+def send_consolidated_telegram_message(message):
+
+    if not message:
+        print(
+            "[CONSOLIDATED] No valid data available."
+        )
+        return
+
+    token = os.environ["TELEGRAM_BOT_TOKEN"]
+
+    chat_id = os.environ["TELEGRAM_CHAT_ID"]
+
+    response = requests.post(
+
+        f"https://api.telegram.org/bot{token}/sendMessage",
+
+        json={
+
+            "chat_id": chat_id,
+
+            "text": message,
+
+            "parse_mode": "HTML"
+
+        },
+
+        timeout=30
+
+    )
+
+    response.raise_for_status()
+
+    result = response.json()
+
+    if not result.get("ok"):
+
+        raise RuntimeError(
+            f"Consolidated Telegram error: {result}"
+        )
+
+    print(
+        "[CONSOLIDATED] Telegram message sent successfully!"
+    )
+
+
+# ==================================================
+# MAIN - EIGHT SCRAPERS + NINTH CONSOLIDATED MESSAGE
 # ==================================================
 
 async def main():
@@ -872,6 +1066,10 @@ async def main():
         "PAIR": PAIR_URL,
         "SYMBOL": SYMBOL_URL
     }
+
+    # --------------------------------------------------
+    # STEP 1: RUN ALL EIGHT SCRAPERS
+    # --------------------------------------------------
 
     market_results = await asyncio.gather(
         *[
@@ -897,6 +1095,10 @@ async def main():
 
     successful = 0
     errors = []
+
+    # --------------------------------------------------
+    # STEP 2: SEND EIGHT INDIVIDUAL TELEGRAM MESSAGES
+    # --------------------------------------------------
 
     print("\n" + "=" * 65)
     print("STARTING TELEGRAM DELIVERY")
@@ -962,10 +1164,61 @@ async def main():
                     f"{market} {timeframe}: {error}"
                 )
 
+    # --------------------------------------------------
+    # STEP 3: BUILD NINTH CONSOLIDATED MESSAGE
+    # --------------------------------------------------
+
+    print("\n" + "=" * 65)
+    print("BUILDING CONSOLIDATED LIQUIDATION REPORT")
+    print("=" * 65)
+
+    try:
+
+        consolidated_message = build_consolidated_message(
+            all_results
+        )
+
+        if consolidated_message:
+
+            print(
+                "[CONSOLIDATED] Sending ninth Telegram message..."
+            )
+
+            await asyncio.to_thread(
+                send_consolidated_telegram_message,
+                consolidated_message
+            )
+
+            successful += 1
+
+        else:
+
+            print(
+                "[CONSOLIDATED] No valid liquidation data available."
+            )
+
+            errors.append(
+                "CONSOLIDATED: No valid liquidation data"
+            )
+
+    except Exception as error:
+
+        print(
+            f"[CONSOLIDATED] ERROR: {error}"
+        )
+
+        errors.append(
+            f"CONSOLIDATED: {error}"
+        )
+
+    # --------------------------------------------------
+    # STEP 4: FINAL DELIVERY SUMMARY
+    # --------------------------------------------------
+
     print("\n" + "=" * 65)
 
     print(
-        f"SUCCESSFUL TELEGRAM MESSAGES: {successful}/8"
+        f"SUCCESSFUL TELEGRAM MESSAGES: {successful}/9"
     )
 
     if errors:
@@ -973,13 +1226,17 @@ async def main():
         print("\nERRORS:")
 
         for error in errors:
+
             print(error)
 
         raise RuntimeError(
             "One or more scraping or Telegram jobs failed."
         )
 
-    print("ALL EIGHT TIMEFRAMES COMPLETED SUCCESSFULLY!")
+    print(
+        "ALL EIGHT SCRAPERS AND CONSOLIDATED MESSAGE COMPLETED!"
+    )
+
     print("=" * 65)
 
 
@@ -990,3 +1247,4 @@ async def main():
 if __name__ == "__main__":
 
     asyncio.run(main())
+

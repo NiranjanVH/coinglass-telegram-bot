@@ -212,6 +212,12 @@ async def main():
 
             separator_inserted = True
 
+        # Side and emoji
+        if order["side"] == "LONG LIQ":
+            side = "🟢 L"
+        else:
+            side = "🔴 S"
+
         # Volume ranking
         rank = ""
 
@@ -224,13 +230,10 @@ async def main():
         ):
             rank = " 🥈 2ND"
 
-        # Each liquidation record occupies ONE line
+        # Compact single-line record
         lines.append(
-            f"<b>{order['side']}</b> | "
-            f"${order['price']:,.2f} | "
-            f"{order['diff']:+,.2f} "
-            f"({order['diff_pct']:+.2f}%) | "
-            f"{format_volume(order['volume'])}"
+            f"{side} ${order['price']:,.0f} "
+            f"| {format_volume(order['volume'])}"
             f"{rank}"
         )
 

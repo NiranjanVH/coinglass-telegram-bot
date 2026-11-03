@@ -5,7 +5,6 @@ import os
 import requests
 
 from playwright.async_api import async_playwright
-
 from scraper import JS_EXTRACT_SCRIPT
 
 
@@ -31,6 +30,12 @@ VIEWPORT = {
 }
 
 TIMEFRAMES = ["48H", "12H", "24H", "3D"]
+
+CHART_SELECTOR = ".echarts-for-react"
+
+MAX_EXTRACTION_ATTEMPTS = 8
+CHART_WAIT_TIMEOUT = 20000
+RETRY_DELAY = 10
 
 
 # ==================================================
@@ -67,54 +72,49 @@ async def select_timeframe(page, timeframe):
 
     await dropdown.wait_for(
         state="visible",
-        timeout=15000
+        timeout=20000
     )
 
     await dropdown.click()
 
     await asyncio.sleep(1)
 
-    if timeframe == "48H":
+    selectors = {
 
-        selectors = [
+        "48H": [
             "li[role='option']:has-text('48 hour')",
             "div[role='option']:has-text('48 hour')",
             "[role='option']:has-text('48h')"
-        ]
+        ],
 
-    elif timeframe == "12H":
-
-        selectors = [
+        "12H": [
             "li[role='option']:has-text('12 hour')",
             "div[role='option']:has-text('12 hour')",
             "[role='option']:has-text('12h')"
-        ]
+        ],
 
-    elif timeframe == "24H":
-
-        selectors = [
+        "24H": [
             "li[role='option']:has-text('24 hour')",
             "div[role='option']:has-text('24 hour')",
             "[role='option']:has-text('24h')"
-        ]
+        ],
 
-    elif timeframe == "3D":
-
-        selectors = [
+        "3D": [
             "li[role='option']:has-text('3 day')",
             "div[role='option']:has-text('3 day')",
             "[role='option']:has-text('3d')"
         ]
 
-    else:
+    }
 
+    if timeframe not in selectors:
         raise ValueError(
             f"Unsupported timeframe: {timeframe}"
         )
 
     selected = False
 
-    for selector in selectors:
+    for selector in selectors[timeframe]:
 
         option = page.locator(selector).first
 
@@ -122,7 +122,7 @@ async def select_timeframe(page, timeframe):
 
             await option.wait_for(
                 state="visible",
-                timeout=5000
+                timeout=7000
             )
 
             await option.click()
@@ -136,16 +136,104 @@ async def select_timeframe(page, timeframe):
     if not selected:
 
         raise RuntimeError(
-            f"[{timeframe}] "
-            "Could not find timeframe option."
+            f"[{timeframe}] Could not find timeframe option."
         )
 
     await asyncio.sleep(3)
 
     print(
-        f"[{timeframe}] "
-        "Timeframe selected successfully."
+        f"[{timeframe}] Timeframe selected successfully."
     )
+
+
+# ==================================================
+# WAIT FOR CHART
+# ==================================================
+
+async def wait_for_chart(
+    page,
+    market,
+    timeframe,
+    timeout=CHART_WAIT_TIMEOUT
+):
+
+    print(
+        f"[{market} {timeframe}] "
+        "Waiting for chart to appear..."
+    )
+
+    try:
+
+        await page.locator(
+            CHART_SELECTOR
+        ).first.wait_for(
+            state="visible",
+            timeout=timeout
+        )
+
+        print(
+            f"[{market} {timeframe}] "
+            "Chart detected successfully."
+        )
+
+        return True
+
+    except Exception:
+
+        print(
+            f"[{market} {timeframe}] "
+            "Chart not visible yet."
+        )
+
+        return False
+
+
+# ==================================================
+# VALIDATE RAW CHART DATA
+# ==================================================
+
+def is_valid_chart_data(candidate):
+
+    if not candidate or candidate.get("error"):
+        return False
+
+    x_axis = candidate.get("xAxis", [])
+    series = candidate.get("series", [])
+
+    if not x_axis or not series:
+        return False
+
+    candle = next(
+        (
+            s for s in series
+            if isinstance(s, dict)
+            and s.get("type") == "candlestick"
+        ),
+        None
+    )
+
+    heatmap = next(
+        (
+            s for s in series
+            if isinstance(s, dict)
+            and s.get("type") == "heatmap"
+        ),
+        None
+    )
+
+    if not candle or not heatmap:
+        return False
+
+    candle_data = candle.get("data", [])
+    heatmap_data = heatmap.get("data", [])
+
+    if len(candle_data) < len(x_axis):
+        return False
+
+    if not heatmap_data:
+        return False
+
+    return True
 
 
 # ==================================================
@@ -200,12 +288,17 @@ def process_chart_data(raw_data):
     if len(raw_candle) < 4:
         return None
 
-    candle = {
-        "open": float(raw_candle[0]),
-        "close": float(raw_candle[1]),
-        "low": float(raw_candle[2]),
-        "high": float(raw_candle[3]),
-    }
+    try:
+
+        candle = {
+            "open": float(raw_candle[0]),
+            "close": float(raw_candle[1]),
+            "low": float(raw_candle[2]),
+            "high": float(raw_candle[3]),
+        }
+
+    except (TypeError, ValueError):
+        return None
 
     current_price = candle["close"]
 
@@ -222,24 +315,19 @@ def process_chart_data(raw_data):
         if len(point) < 3:
             continue
 
-        x_idx, y_idx, volume = (
-            point[0],
-            point[1],
-            point[2]
-        )
-
-        if x_idx != last_idx:
-            continue
+        x_idx, y_idx, volume = point[0], point[1], point[2]
 
         try:
 
+            if int(x_idx) != last_idx:
+                continue
+
             y_index = int(y_idx)
 
-            price_level = float(
-                y_axis[y_index]
-                if 0 <= y_index < len(y_axis)
-                else y_idx
-            )
+            if 0 <= y_index < len(y_axis):
+                price_level = float(y_axis[y_index])
+            else:
+                price_level = float(y_idx)
 
             volume = float(volume)
 
@@ -267,22 +355,18 @@ def process_chart_data(raw_data):
 
             "diff_pct": (
                 diff / current_price
-            ) * 100,
+            ) * 100
 
         })
 
     if not orders:
         return None
 
-    # Keep top 15 highest-volume orders.
-
     top_orders = sorted(
         orders,
         key=lambda item: item["volume"],
         reverse=True
     )[:15]
-
-    # Display highest price first.
 
     top_orders.sort(
         key=lambda item: item["price"],
@@ -297,7 +381,7 @@ def process_chart_data(raw_data):
 
         "candle": candle,
 
-        "whale_orders": top_orders,
+        "whale_orders": top_orders
 
     }
 
@@ -366,11 +450,7 @@ async def scrape_market_timeframe(
             f"{await page.title()}"
         )
 
-        status = (
-            response.status
-            if response
-            else None
-        )
+        status = response.status if response else None
 
         print(
             f"[{market} {timeframe}] "
@@ -396,7 +476,29 @@ async def scrape_market_timeframe(
             "Initializing page..."
         )
 
-        await asyncio.sleep(15)
+        # Initial chart detection with extended timeout.
+
+        chart_ready = await wait_for_chart(
+            page,
+            market,
+            timeframe,
+            timeout=60000
+        )
+
+        if not chart_ready:
+
+            await page.screenshot(
+                path=(
+                    f"debug_{market.lower()}_"
+                    f"{timeframe.lower()}.png"
+                ),
+                full_page=True
+            )
+
+            raise RuntimeError(
+                f"[{market} {timeframe}] "
+                "Chart did not appear after 60 seconds."
+            )
 
         await page.screenshot(
             path=(
@@ -404,17 +506,6 @@ async def scrape_market_timeframe(
                 f"{timeframe.lower()}.png"
             ),
             full_page=True
-        )
-
-        await page.wait_for_selector(
-            ".echarts-for-react",
-            state="visible",
-            timeout=45000
-        )
-
-        print(
-            f"[{market} {timeframe}] "
-            "Chart detected."
         )
 
         await select_timeframe(
@@ -427,81 +518,91 @@ async def scrape_market_timeframe(
             "Hydrating chart..."
         )
 
-        await asyncio.sleep(60)
+        await asyncio.sleep(45)
 
         raw_data = None
 
-        for attempt in range(1, 7):
+        for attempt in range(
+            1,
+            MAX_EXTRACTION_ATTEMPTS + 1
+        ):
 
             print(
                 f"[{market} {timeframe}] "
-                f"Extraction attempt {attempt}/6"
+                f"Extraction attempt "
+                f"{attempt}/{MAX_EXTRACTION_ATTEMPTS}"
             )
 
-            candidate = await page.evaluate(
-                JS_EXTRACT_SCRIPT
+            # Check whether chart still exists before extraction.
+
+            chart_ready = await wait_for_chart(
+                page,
+                market,
+                timeframe,
+                timeout=CHART_WAIT_TIMEOUT
             )
 
-            if candidate and not candidate.get("error"):
-
-                x_axis = candidate.get("xAxis", [])
-                series = candidate.get("series", [])
-
-                candle = next(
-                    (
-                        s for s in series
-                        if isinstance(s, dict)
-                        and s.get("type") == "candlestick"
-                    ),
-                    None
-                )
-
-                heatmap = next(
-                    (
-                        s for s in series
-                        if isinstance(s, dict)
-                        and s.get("type") == "heatmap"
-                    ),
-                    None
-                )
-
-                if (
-                    x_axis
-                    and candle
-                    and heatmap
-                    and len(candle.get("data", [])) >= len(x_axis)
-                    and len(heatmap.get("data", [])) > 0
-                ):
-
-                    raw_data = candidate
-
-                    print(
-                        f"[{market} {timeframe}] "
-                        "Valid chart data detected."
-                    )
-
-                    break
+            if not chart_ready:
 
                 print(
                     f"[{market} {timeframe}] "
-                    "Chart data incomplete."
+                    "Chart temporarily unavailable. "
+                    "Retrying..."
                 )
 
-            else:
+                await asyncio.sleep(RETRY_DELAY)
+                continue
+
+            try:
+
+                candidate = await page.evaluate(
+                    JS_EXTRACT_SCRIPT
+                )
+
+            except Exception as error:
 
                 print(
                     f"[{market} {timeframe}] "
-                    f"Extraction error: {candidate}"
+                    f"JavaScript extraction failed: {error}"
                 )
 
-            await asyncio.sleep(15)
+                await asyncio.sleep(RETRY_DELAY)
+                continue
+
+            if is_valid_chart_data(candidate):
+
+                raw_data = candidate
+
+                print(
+                    f"[{market} {timeframe}] "
+                    "Valid chart data detected."
+                )
+
+                break
+
+            print(
+                f"[{market} {timeframe}] "
+                f"Chart data incomplete: {candidate}"
+            )
+
+            await asyncio.sleep(RETRY_DELAY)
 
         if raw_data is None:
 
+            await page.screenshot(
+                path=(
+                    f"debug_failed_{market.lower()}_"
+                    f"{timeframe.lower()}.png"
+                ),
+                full_page=True
+            )
+
             raise RuntimeError(
                 f"[{market} {timeframe}] "
-                "Chart data not ready."
+                "Chart data not ready after all retries."
             )
+
+        # Save raw JSON.
 
         with open(
             output_file,
@@ -544,175 +645,13 @@ async def scrape_market_timeframe(
 
 
 # ==================================================
-# BUILD TELEGRAM MESSAGE
-# ==================================================
-
-def build_telegram_message(
-    data,
-    timeframe,
-    market
-):
-
-    orders = data["whale_orders"]
-
-    lines = [
-
-        f"<b>⚡ COINGLASS BTC | {market} | {timeframe}</b>",
-
-        "",
-
-        f"🕒 {data['timestamp']}",
-
-        f"💰 Price: ${data['price']:,.2f}",
-
-        f"🔺 High: ${data['candle']['high']:,.2f}",
-
-        f"🔻 Low: ${data['candle']['low']:,.2f}",
-
-        "",
-
-        "<b>🐋 LIQUIDATION WALLS</b>",
-
-        ""
-
-    ]
-
-    sorted_volumes = sorted(
-        [order["volume"] for order in orders],
-        reverse=True
-    )
-
-    highest = (
-        sorted_volumes[0]
-        if sorted_volumes
-        else 0
-    )
-
-    second = (
-        sorted_volumes[1]
-        if len(sorted_volumes) > 1
-        else 0
-    )
-
-    separator_inserted = False
-
-    for order in orders:
-
-        if (
-            not separator_inserted
-            and order["price"] < data["price"]
-        ):
-
-            lines.extend([
-
-                f"<b>━━ ACTIVE: ${data['price']:,.2f} ━━</b>",
-
-                ""
-
-            ])
-
-            separator_inserted = True
-
-        is_long = order["side"] == "LONG LIQ"
-
-        emoji = "🟢" if is_long else "🔴"
-
-        side = "L" if is_long else "S"
-
-        rank = ""
-
-        if order["volume"] == highest:
-
-            rank = " ⭐"
-
-        elif (
-            order["volume"] == second
-            and second > 0
-        ):
-
-            rank = " 🥈"
-
-        lines.append(
-
-            f"{emoji} <b>{side}</b> "
-            f"${order['price']:,.0f} | "
-            f"{format_volume(order['volume'])}"
-            f"{rank}"
-
-        )
-
-    if not separator_inserted:
-
-        lines.extend([
-
-            "",
-
-            f"<b>━━ ACTIVE: ${data['price']:,.2f} ━━</b>"
-
-        ])
-
-    return "\n".join(lines)
-
-
-# ==================================================
-# SEND TELEGRAM MESSAGE
-# ==================================================
-
-def send_telegram_message(
-    message,
-    market,
-    timeframe
-):
-
-    token = os.environ["TELEGRAM_BOT_TOKEN"]
-
-    chat_id = os.environ["TELEGRAM_CHAT_ID"]
-
-    response = requests.post(
-
-        f"https://api.telegram.org/bot{token}/sendMessage",
-
-        json={
-
-            "chat_id": chat_id,
-
-            "text": message,
-
-            "parse_mode": "HTML"
-
-        },
-
-        timeout=30
-
-    )
-
-    response.raise_for_status()
-
-    result = response.json()
-
-    if not result.get("ok"):
-
-        raise RuntimeError(
-            f"[{market} {timeframe}] "
-            f"Telegram error: {result}"
-        )
-
-    print(
-        f"[{market} {timeframe}] "
-        "Telegram message sent successfully!"
-    )
-
-
-# ==================================================
 # SCRAPE ONE MARKET - FOUR PARALLEL TIMEFRAMES
 # ==================================================
 
 async def scrape_market(market, target_url):
 
     print("\n" + "=" * 60)
-
     print(f"STARTING {market} SCRAPERS")
-
     print("=" * 60)
 
     async with async_playwright() as p:
@@ -724,9 +663,7 @@ async def scrape_market(market, target_url):
             args=[
 
                 "--disable-blink-features=AutomationControlled",
-
                 "--no-sandbox",
-
                 "--disable-dev-shm-usage"
 
             ]
@@ -740,15 +677,10 @@ async def scrape_market(market, target_url):
                 *[
 
                     scrape_market_timeframe(
-
                         browser,
-
                         market,
-
                         timeframe,
-
                         target_url
-
                     )
 
                     for timeframe in TIMEFRAMES
@@ -773,56 +705,189 @@ async def scrape_market(market, target_url):
 
 
 # ==================================================
-# MAIN - EIGHT PARALLEL SCRAPERS
+# BUILD TELEGRAM MESSAGE
+# ==================================================
+
+def build_telegram_message(data, timeframe, market):
+
+    orders = data["whale_orders"]
+
+    lines = [
+        f"<b>⚡ COINGLASS BTC | {market} | {timeframe}</b>",
+        "",
+        f"🕒 {data['timestamp']}",
+        f"💰 Price: ${data['price']:,.2f}",
+        f"🔺 High: ${data['candle']['high']:,.2f}",
+        f"🔻 Low: ${data['candle']['low']:,.2f}",
+        "",
+        "<b>🐋 LIQUIDATION WALLS</b>",
+        ""
+    ]
+
+    volumes = sorted(
+        [order["volume"] for order in orders],
+        reverse=True
+    )
+
+    highest = volumes[0] if volumes else 0
+    second = volumes[1] if len(volumes) > 1 else 0
+
+    separator_inserted = False
+
+    for order in orders:
+
+        if (
+            not separator_inserted
+            and order["price"] < data["price"]
+        ):
+
+            lines.extend([
+                f"<b>━━ ACTIVE: ${data['price']:,.2f} ━━</b>",
+                ""
+            ])
+
+            separator_inserted = True
+
+        is_long = order["side"] == "LONG LIQ"
+
+        emoji = "🟢" if is_long else "🔴"
+        side = "L" if is_long else "S"
+
+        rank = ""
+
+        if order["volume"] == highest:
+            rank = " ⭐"
+
+        elif order["volume"] == second and second > 0:
+            rank = " 🥈"
+
+        lines.append(
+            f"{emoji} <b>{side}</b> "
+            f"${order['price']:,.0f} | "
+            f"{format_volume(order['volume'])}"
+            f"{rank}"
+        )
+
+    if not separator_inserted:
+
+        lines.extend([
+            "",
+            f"<b>━━ ACTIVE: ${data['price']:,.2f} ━━</b>"
+        ])
+
+    return "\n".join(lines)
+
+
+# ==================================================
+# SEND TELEGRAM MESSAGE
+# ==================================================
+
+def send_telegram_message(message, market, timeframe):
+
+    token = os.environ["TELEGRAM_BOT_TOKEN"]
+    chat_id = os.environ["TELEGRAM_CHAT_ID"]
+
+    response = requests.post(
+        f"https://api.telegram.org/bot{token}/sendMessage",
+        json={
+            "chat_id": chat_id,
+            "text": message,
+            "parse_mode": "HTML"
+        },
+        timeout=30
+    )
+
+    response.raise_for_status()
+
+    result = response.json()
+
+    if not result.get("ok"):
+
+        raise RuntimeError(
+            f"[{market} {timeframe}] Telegram error: {result}"
+        )
+
+    print(
+        f"[{market} {timeframe}] "
+        "Telegram message sent successfully!"
+    )
+
+
+# ==================================================
+# SCRAPE ONE MARKET - FOUR TIMEFRAMES
+# ==================================================
+
+async def scrape_market(market, target_url):
+
+    print("\n" + "=" * 60)
+    print(f"STARTING {market} SCRAPERS")
+    print("=" * 60)
+
+    async with async_playwright() as p:
+
+        browser = await p.chromium.launch(
+            headless=True,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-dev-shm-usage"
+            ]
+        )
+
+        try:
+
+            results = await asyncio.gather(
+                *[
+                    scrape_market_timeframe(
+                        browser,
+                        market,
+                        timeframe,
+                        target_url
+                    )
+                    for timeframe in TIMEFRAMES
+                ],
+                return_exceptions=True
+            )
+
+            return dict(zip(TIMEFRAMES, results))
+
+        finally:
+
+            await browser.close()
+
+            print(f"[{market}] Browser closed.")
+
+
+# ==================================================
+# MAIN - EIGHT SCRAPERS
 # ==================================================
 
 async def main():
 
     print("=" * 65)
-
-    print(
-        "STARTING EIGHT PARALLEL COINGLASS SCRAPERS"
-    )
-
+    print("STARTING EIGHT PARALLEL COINGLASS SCRAPERS")
     print("=" * 65)
 
     markets = {
-
         "PAIR": PAIR_URL,
-
         "SYMBOL": SYMBOL_URL
-
     }
 
-    # Launch both markets simultaneously.
-    # Each market launches four timeframe jobs.
-
     market_results = await asyncio.gather(
-
         *[
-
             scrape_market(market, url)
-
             for market, url in markets.items()
-
         ],
-
         return_exceptions=True
-
     )
 
     all_results = {}
 
-    for market, result in zip(
-        markets.keys(),
-        market_results
-    ):
+    for market, result in zip(markets.keys(), market_results):
 
         if isinstance(result, BaseException):
 
-            print(
-                f"[{market}] WORKER FAILED: {result}"
-            )
+            print(f"[{market}] WORKER FAILED: {result}")
 
             all_results[market] = {}
 
@@ -831,23 +896,15 @@ async def main():
             all_results[market] = result
 
     successful = 0
-
     errors = []
 
     print("\n" + "=" * 65)
-
     print("STARTING TELEGRAM DELIVERY")
-
     print("=" * 65)
-
-    # Send eight independent Telegram messages.
 
     for market in markets:
 
-        market_data = all_results.get(
-            market,
-            {}
-        )
+        market_data = all_results.get(market, {})
 
         for timeframe in TIMEFRAMES:
 
@@ -864,8 +921,7 @@ async def main():
             if isinstance(result, BaseException):
 
                 print(
-                    f"[{market} {timeframe}] "
-                    f"FAILED: {result}"
+                    f"[{market} {timeframe}] FAILED: {result}"
                 )
 
                 errors.append(
@@ -877,13 +933,9 @@ async def main():
             try:
 
                 message = build_telegram_message(
-
                     result,
-
                     timeframe,
-
                     market
-
                 )
 
                 print(
@@ -892,15 +944,10 @@ async def main():
                 )
 
                 await asyncio.to_thread(
-
                     send_telegram_message,
-
                     message,
-
                     market,
-
                     timeframe
-
                 )
 
                 successful += 1
@@ -908,8 +955,7 @@ async def main():
             except Exception as error:
 
                 print(
-                    f"[{market} {timeframe}] "
-                    f"ERROR: {error}"
+                    f"[{market} {timeframe}] ERROR: {error}"
                 )
 
                 errors.append(
@@ -919,8 +965,7 @@ async def main():
     print("\n" + "=" * 65)
 
     print(
-        f"SUCCESSFUL TELEGRAM MESSAGES: "
-        f"{successful}/8"
+        f"SUCCESSFUL TELEGRAM MESSAGES: {successful}/8"
     )
 
     if errors:
@@ -928,17 +973,13 @@ async def main():
         print("\nERRORS:")
 
         for error in errors:
-
             print(error)
 
         raise RuntimeError(
             "One or more scraping or Telegram jobs failed."
         )
 
-    print(
-        "ALL EIGHT TIMEFRAMES COMPLETED SUCCESSFULLY!"
-    )
-
+    print("ALL EIGHT TIMEFRAMES COMPLETED SUCCESSFULLY!")
     print("=" * 65)
 
 

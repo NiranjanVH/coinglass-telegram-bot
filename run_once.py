@@ -19,6 +19,16 @@ TARGET_URL = (
 )
 
 
+def format_usd(value):
+    if value >= 1_000_000_000:
+        return f"${value / 1_000_000_000:.2f}B"
+    elif value >= 1_000_000:
+        return f"${value / 1_000_000:.2f}M"
+    elif value >= 1_000:
+        return f"${value / 1_000:.2f}K"
+    return f"${value:.2f}"
+
+
 async def main():
 
     async with async_playwright() as p:
@@ -50,16 +60,14 @@ async def main():
 
             print("URL:", page.url)
             print("TITLE:", await page.title())
+
             print(
                 "HTTP STATUS:",
                 response.status if response else "Unknown"
             )
 
-            print("Response status:", response.status if response else None)
-            print("Final URL:", page.url)
-            print("Page title:", await page.title())
-            print("Page content:", (await page.locator("body").inner_text())[:5000])
             print("Waiting for page initialization...")
+
             await asyncio.sleep(15)
 
             await page.screenshot(
@@ -81,7 +89,7 @@ async def main():
 
             await select_48h_timeframe(page)
 
-            # Allow chart to update after timeframe selection
+            # Allow chart to hydrate
             print("Waiting 60 seconds for chart hydration...")
 
             await asyncio.sleep(60)
@@ -138,10 +146,7 @@ async def main():
                         print("Chart data incomplete.")
 
                 else:
-                    print(
-                        "Extraction error:",
-                        candidate
-                    )
+                    print("Extraction error:", candidate)
 
                 await asyncio.sleep(15)
 
@@ -153,7 +158,6 @@ async def main():
 
             # Save extracted chart data
             with open(JSON_FILENAME, "w") as f:
-
                 json.dump(raw_data, f)
 
             print("Chart data saved.")
@@ -161,7 +165,7 @@ async def main():
         finally:
             await browser.close()
 
-    # Process data using original scraper function
+    # Process extracted data
     print("Processing liquidation data...")
 
     data = process_latest_column_from_json()
@@ -176,73 +180,89 @@ async def main():
             "No whale orders found."
         )
 
+    # Ensure all 15 available orders are included
+    orders = data["whale_orders"]
+
+    print(f"Liquidation orders found: {len(orders)}")
+
     # Prepare Telegram message
     lines = [
-        "<b>⚡ LIVE COINGLASS FEED PAIR (48 HOUR TIMEFRAME)</b>",
+        "<b>⚡ COINGLASS BTC | 48H</b>",
         "",
-        f"<b>Timestamp:</b> {data['timestamp']}",
-        f"<b>Current Price:</b> ${data['price']:,.2f}",
-        f"<b>High:</b> ${data['candle']['high']:,.2f}",
-        f"<b>Low:</b> ${data['candle']['low']:,.2f}",
+        f"🕒 {data['timestamp']}",
+        f"💰 Price: {format_usd(data['price'])}",
+        f"🔺 High: {format_usd(data['candle']['high'])}",
+        f"🔻 Low: {format_usd(data['candle']['low'])}",
         "",
-        "<b>🐋 Liquidation Walls Above & Below Current Price</b>",
+        "<b>🐋 LIQUIDATION WALLS</b>",
         ""
     ]
 
-    highest_vol = max(
-        order["volume"]
-        for order in data["whale_orders"]
-    )
-
-    second_highest = sorted(
-        data["whale_orders"],
-        key=lambda x: x["volume"],
+    # Find highest and second-highest volume
+    sorted_volumes = sorted(
+        [order["volume"] for order in orders],
         reverse=True
     )
 
+    highest_vol = sorted_volumes[0]
+
     second_highest_vol = (
-        second_highest[1]["volume"]
-        if len(second_highest) > 1
+        sorted_volumes[1]
+        if len(sorted_volumes) > 1
         else 0
     )
 
     separator_inserted = False
 
-    for order in data["whale_orders"]:
+    for order in orders:
 
+        # Insert active price separator
         if (
             not separator_inserted
             and order["price"] < data["price"]
         ):
 
             lines.extend([
-                f"<b>ACTIVE PRICE: ${data['price']:,.2f}</b>",
+                f"<b>━━ ACTIVE: {format_usd(data['price'])} ━━</b>",
                 ""
             ])
 
             separator_inserted = True
 
+        # Intensity bar
         bar_len = max(
             1,
             int((order["volume"] / highest_vol) * 15)
         )
 
+        # Volume ranking
         rank = ""
 
         if order["volume"] == highest_vol:
-            rank = " ⭐ 1ST HIGHEST"
+            rank = " ⭐ 1ST"
 
-        elif order["volume"] == second_highest_vol:
-            rank = " 🥈 2ND HIGHEST"
+        elif (
+            order["volume"] == second_highest_vol
+            and second_highest_vol > 0
+        ):
+            rank = " 🥈 2ND"
 
+        # Format each liquidation order
         lines.append(
             f"<b>{order['side']}</b> | "
-            f"${order['price']:,.2f} | "
-            f"{order['diff']:+,.2f} "
+            f"{format_usd(order['price'])}\n"
+            f"Δ {order['diff']:+,.2f} "
             f"({order['diff_pct']:+.2f}%) | "
-            f"${order['volume']:,.0f}\n"
+            f"{format_usd(order['volume'])}\n"
             f"{'█' * bar_len}{rank}"
         )
+
+    # Add active price if all orders are above current price
+    if not separator_inserted:
+        lines.extend([
+            "",
+            f"<b>━━ ACTIVE: {format_usd(data['price'])} ━━</b>"
+        ])
 
     message = "\n".join(lines)
 
@@ -271,9 +291,11 @@ async def main():
             f"Telegram error: {result}"
         )
 
-    print("Telegram message sent successfully!")
+    print(
+        f"Telegram message sent successfully! "
+        f"{len(orders)} orders included."
+    )
 
 
 if __name__ == "__main__":
-
     asyncio.run(main())

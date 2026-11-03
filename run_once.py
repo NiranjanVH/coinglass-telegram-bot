@@ -20,7 +20,7 @@ TARGET_URL = (
 
 
 def format_volume(value):
-    """Format volume using K, M, B."""
+    """Format liquidation volume using K, M, B."""
     if value >= 1_000_000_000:
         return f"${value / 1_000_000_000:.2f}B"
     elif value >= 1_000_000:
@@ -168,19 +168,6 @@ async def main():
 
     print(f"Liquidation orders found: {len(orders)}")
 
-    # Telegram header
-    lines = [
-        "<b>⚡ COINGLASS BTC | 48H</b>",
-        "",
-        f"🕒 {data['timestamp']}",
-        f"💰 Price: ${data['price']:,.2f}",
-        f"🔺 High: ${data['candle']['high']:,.2f}",
-        f"🔻 Low: ${data['candle']['low']:,.2f}",
-        "",
-        "<b>🐋 LIQUIDATION WALLS</b>",
-        ""
-    ]
-
     # Find highest and second-highest volumes
     sorted_volumes = sorted(
         [order["volume"] for order in orders],
@@ -194,6 +181,19 @@ async def main():
         if len(sorted_volumes) > 1
         else 0
     )
+
+    # Telegram header
+    lines = [
+        "<b>⚡ COINGLASS BTC | 48H</b>",
+        "",
+        f"🕒 {data['timestamp']}",
+        f"💰 Price: ${data['price']:,.2f}",
+        f"🔺 High: ${data['candle']['high']:,.2f}",
+        f"🔻 Low: ${data['candle']['low']:,.2f}",
+        "",
+        "<b>🐋 LIQUIDATION WALLS</b>",
+        ""
+    ]
 
     separator_inserted = False
 
@@ -212,11 +212,11 @@ async def main():
 
             separator_inserted = True
 
-        # Side and emoji
+        # LONG / SHORT indicator
         if order["side"] == "LONG LIQ":
-            side = "🟢 L"
+            indicator = "🟢 L"
         else:
-            side = "🔴 S"
+            indicator = "🔴 S"
 
         # Volume ranking
         rank = ""
@@ -232,8 +232,9 @@ async def main():
 
         # Compact single-line record
         lines.append(
-            f"{side} ${order['price']:,.0f} "
-            f"| {format_volume(order['volume'])}"
+            f"{indicator} "
+            f"${order['price']:,.2f} | "
+            f"{format_volume(order['volume'])}"
             f"{rank}"
         )
 

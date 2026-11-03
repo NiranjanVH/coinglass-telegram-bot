@@ -1,6 +1,5 @@
-
 import asyncio
-import json
+json
 import os
 import requests
 
@@ -476,8 +475,6 @@ async def scrape_market_timeframe(
             "Initializing page..."
         )
 
-        # Initial chart detection with extended timeout.
-
         chart_ready = await wait_for_chart(
             page,
             market,
@@ -532,8 +529,6 @@ async def scrape_market_timeframe(
                 f"Extraction attempt "
                 f"{attempt}/{MAX_EXTRACTION_ATTEMPTS}"
             )
-
-            # Check whether chart still exists before extraction.
 
             chart_ready = await wait_for_chart(
                 page,
@@ -602,8 +597,6 @@ async def scrape_market_timeframe(
                 "Chart data not ready after all retries."
             )
 
-        # Save raw JSON.
-
         with open(
             output_file,
             "w",
@@ -648,10 +641,10 @@ async def scrape_market_timeframe(
 # SCRAPE ONE MARKET - FOUR PARALLEL TIMEFRAMES
 # ==================================================
 
-async def scrape_market(market, target_url):
+async def scrape_market(market, target_url, timeframes=TIMEFRAMES):
 
     print("\n" + "=" * 60)
-    print(f"STARTING {market} SCRAPERS")
+    print(f"STARTING {market} SCRAPERS ({', '.join(timeframes)})")
     print("=" * 60)
 
     async with async_playwright() as p:
@@ -683,7 +676,7 @@ async def scrape_market(market, target_url):
                         target_url
                     )
 
-                    for timeframe in TIMEFRAMES
+                    for timeframe in timeframes
 
                 ],
 
@@ -692,7 +685,7 @@ async def scrape_market(market, target_url):
             )
 
             return dict(
-                zip(TIMEFRAMES, results)
+                zip(timeframes, results)
             )
 
         finally:
@@ -814,59 +807,7 @@ def send_telegram_message(message, market, timeframe):
 
 
 # ==================================================
-# SCRAPE ONE MARKET - FOUR TIMEFRAMES
-# ==================================================
-
-async def scrape_market(market, target_url):
-
-    print("\n" + "=" * 60)
-    print(f"STARTING {market} SCRAPERS")
-    print("=" * 60)
-
-    async with async_playwright() as p:
-
-        browser = await p.chromium.launch(
-            headless=True,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-                "--disable-dev-shm-usage"
-            ]
-        )
-
-        try:
-
-            results = await asyncio.gather(
-                *[
-                    scrape_market_timeframe(
-                        browser,
-                        market,
-                        timeframe,
-                        target_url
-                    )
-                    for timeframe in TIMEFRAMES
-                ],
-                return_exceptions=True
-            )
-
-            return dict(zip(TIMEFRAMES, results))
-
-        finally:
-
-            await browser.close()
-
-            print(f"[{market}] Browser closed.")
-
-
-
-# ==================================================
 # CONSOLIDATED LIQUIDATION MESSAGE
-# ==================================================
-
-
-# ==================================================
-# CONSOLIDATED LIQUIDATION MESSAGE
-# TOP 2 SHORT + TOP 2 LONG PER MARKET / TIMEFRAME
 # ==================================================
 
 def build_consolidated_message(all_results):
@@ -889,7 +830,6 @@ def build_consolidated_message(all_results):
 
             result = market_data.get(timeframe)
 
-            # Skip failed or unavailable scrapers.
             if result is None or isinstance(result, BaseException):
                 continue
 
@@ -902,10 +842,6 @@ def build_consolidated_message(all_results):
             if not orders:
                 continue
 
-            # ------------------------------------------
-            # GET ALL SHORT LIQUIDATION WALLS
-            # ------------------------------------------
-
             short_orders = sorted(
                 [
                     order for order in orders
@@ -915,10 +851,6 @@ def build_consolidated_message(all_results):
                 reverse=True
             )[:2]
 
-            # ------------------------------------------
-            # GET ALL LONG LIQUIDATION WALLS
-            # ------------------------------------------
-
             long_orders = sorted(
                 [
                     order for order in orders
@@ -927,10 +859,6 @@ def build_consolidated_message(all_results):
                 key=lambda order: order["volume"],
                 reverse=True
             )[:2]
-
-            # ------------------------------------------
-            # STORE TOP 2 SHORT WALLS
-            # ------------------------------------------
 
             for order in short_orders:
 
@@ -944,10 +872,6 @@ def build_consolidated_message(all_results):
 
                 })
 
-            # ------------------------------------------
-            # STORE TOP 2 LONG WALLS
-            # ------------------------------------------
-
             for order in long_orders:
 
                 below_orders.append({
@@ -960,38 +884,20 @@ def build_consolidated_message(all_results):
 
                 })
 
-    # ------------------------------------------
-    # CHECK IF ANY DATA IS AVAILABLE
-    # ------------------------------------------
-
     if not active_prices:
         return None
 
-    # Use the average current price across successful
-    # scraper results for a consolidated reference price.
     active_price = sum(active_prices) / len(active_prices)
-
-    # ------------------------------------------
-    # SORT SHORT WALLS BY VOLUME
-    # ------------------------------------------
 
     above_orders.sort(
         key=lambda order: order["volume"],
         reverse=True
     )
 
-    # ------------------------------------------
-    # SORT LONG WALLS BY VOLUME
-    # ------------------------------------------
-
     below_orders.sort(
         key=lambda order: order["volume"],
         reverse=True
     )
-
-    # ------------------------------------------
-    # BUILD TELEGRAM MESSAGE
-    # ------------------------------------------
 
     lines = [
 
@@ -999,8 +905,6 @@ def build_consolidated_message(all_results):
         ""
 
     ]
-
-    # SHORT liquidation walls (above current price).
 
     for order in above_orders:
 
@@ -1011,8 +915,6 @@ def build_consolidated_message(all_results):
             f"{order['market']}{order['timeframe']}"
         )
 
-    # ACTIVE PRICE SEPARATOR.
-
     lines.extend([
 
         "",
@@ -1020,8 +922,6 @@ def build_consolidated_message(all_results):
         ""
 
     ])
-
-    # LONG liquidation walls (below current price).
 
     for order in below_orders:
 
@@ -1033,7 +933,6 @@ def build_consolidated_message(all_results):
         )
 
     return "\n".join(lines)
-
 
 
 # ==================================================
@@ -1086,7 +985,7 @@ def send_consolidated_telegram_message(message):
 
 
 # ==================================================
-# MAIN - EIGHT SCRAPERS + NINTH CONSOLIDATED MESSAGE
+# MAIN - EIGHT SCRAPERS + RETRY + CONSOLIDATED MESSAGE
 # ==================================================
 
 async def main():
@@ -1100,19 +999,19 @@ async def main():
         "SYMBOL": SYMBOL_URL
     }
 
+    all_results = {"PAIR": {}, "SYMBOL": {}}
+
     # --------------------------------------------------
-    # STEP 1: RUN ALL EIGHT SCRAPERS
+    # STEP 1: RUN INITIAL PARALLEL SCRAPERS
     # --------------------------------------------------
 
     market_results = await asyncio.gather(
         *[
-            scrape_market(market, url)
+            scrape_market(market, url, TIMEFRAMES)
             for market, url in markets.items()
         ],
         return_exceptions=True
     )
-
-    all_results = {}
 
     for market, result in zip(markets.keys(), market_results):
 
@@ -1120,17 +1019,48 @@ async def main():
 
             print(f"[{market}] WORKER FAILED: {result}")
 
-            all_results[market] = {}
+            for tf in TIMEFRAMES:
+                all_results[market][tf] = result
 
         else:
 
             all_results[market] = result
 
+    # --------------------------------------------------
+    # STEP 2: IDENTIFY FAILURES & RETRY THEM ONE-BY-ONE
+    # --------------------------------------------------
+
+    failed_jobs = []
+
+    for market in markets:
+        for timeframe in TIMEFRAMES:
+            res = all_results[market].get(timeframe)
+            if res is None or isinstance(res, BaseException):
+                failed_jobs.append((market, timeframe))
+
+    if failed_jobs:
+        print("\n" + "=" * 65)
+        print(f"RETRYING {len(failed_jobs)} FAILED TIMEFRAME(S)...")
+        print("=" * 65)
+
+        for market, timeframe in failed_jobs:
+            print(f"\n[RETRY] Starting background scrape for {market} {timeframe}...")
+            try:
+                # Scrape single timeframe using its target url
+                retry_res = await scrape_market(market, markets[market], [timeframe])
+                if timeframe in retry_res and not isinstance(retry_res[timeframe], BaseException):
+                    all_results[market][timeframe] = retry_res[timeframe]
+                    print(f"[RETRY SUCCESS] {market} {timeframe} recovered successfully!")
+                else:
+                    print(f"[RETRY FAILED] {market} {timeframe} failed again.")
+            except Exception as e:
+                print(f"[RETRY ERROR] {market} {timeframe}: {e}")
+
     successful = 0
     errors = []
 
     # --------------------------------------------------
-    # STEP 2: SEND EIGHT INDIVIDUAL TELEGRAM MESSAGES
+    # STEP 3: SEND TELEGRAM MESSAGES FOR ALL SUCCESSFUL RESULTS
     # --------------------------------------------------
 
     print("\n" + "=" * 65)
@@ -1145,22 +1075,10 @@ async def main():
 
             result = market_data.get(timeframe)
 
-            if result is None:
+            if result is None or isinstance(result, BaseException):
 
                 errors.append(
-                    f"{market} {timeframe}: No result"
-                )
-
-                continue
-
-            if isinstance(result, BaseException):
-
-                print(
-                    f"[{market} {timeframe}] FAILED: {result}"
-                )
-
-                errors.append(
-                    f"{market} {timeframe}: {result}"
+                    f"{market} {timeframe}: Failed after retry"
                 )
 
                 continue
@@ -1198,7 +1116,7 @@ async def main():
                 )
 
     # --------------------------------------------------
-    # STEP 3: BUILD NINTH CONSOLIDATED MESSAGE
+    # STEP 4: BUILD & SEND CONSOLIDATED MESSAGE
     # --------------------------------------------------
 
     print("\n" + "=" * 65)
@@ -1245,7 +1163,7 @@ async def main():
         )
 
     # --------------------------------------------------
-    # STEP 4: FINAL DELIVERY SUMMARY
+    # STEP 5: FINAL DELIVERY SUMMARY
     # --------------------------------------------------
 
     print("\n" + "=" * 65)
@@ -1263,11 +1181,11 @@ async def main():
             print(error)
 
         raise RuntimeError(
-            "One or more scraping or Telegram jobs failed."
+            "One or more scraping or Telegram jobs failed even after retry."
         )
 
     print(
-        "ALL EIGHT SCRAPERS AND CONSOLIDATED MESSAGE COMPLETED!"
+        "ALL SCRAPERS, RETRIES, AND CONSOLIDATED MESSAGE COMPLETED!"
     )
 
     print("=" * 65)
@@ -1280,4 +1198,3 @@ async def main():
 if __name__ == "__main__":
 
     asyncio.run(main())
-

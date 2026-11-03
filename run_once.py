@@ -19,7 +19,8 @@ TARGET_URL = (
 )
 
 
-def format_usd(value):
+def format_volume(value):
+    """Use K, M, B only for liquidation volume."""
     if value >= 1_000_000_000:
         return f"${value / 1_000_000_000:.2f}B"
     elif value >= 1_000_000:
@@ -67,7 +68,6 @@ async def main():
             )
 
             print("Waiting for page initialization...")
-
             await asyncio.sleep(15)
 
             await page.screenshot(
@@ -84,24 +84,17 @@ async def main():
 
             print("Chart detected.")
 
-            # Select 48-hour timeframe
             print("Selecting 48-hour timeframe...")
-
             await select_48h_timeframe(page)
 
-            # Allow chart to hydrate
             print("Waiting 60 seconds for chart hydration...")
-
             await asyncio.sleep(60)
 
-            # Extract chart data with retries
             raw_data = None
 
             for attempt in range(1, 7):
 
-                print(
-                    f"Extraction attempt {attempt}/6"
-                )
+                print(f"Extraction attempt {attempt}/6")
 
                 candidate = await page.evaluate(
                     JS_EXTRACT_SCRIPT
@@ -137,9 +130,7 @@ async def main():
                     ):
 
                         raw_data = candidate
-
                         print("Valid chart data detected.")
-
                         break
 
                     else:
@@ -151,12 +142,10 @@ async def main():
                 await asyncio.sleep(15)
 
             if raw_data is None:
-
                 raise RuntimeError(
                     "Chart data did not become ready."
                 )
 
-            # Save extracted chart data
             with open(JSON_FILENAME, "w") as f:
                 json.dump(raw_data, f)
 
@@ -165,40 +154,33 @@ async def main():
         finally:
             await browser.close()
 
-    # Process extracted data
     print("Processing liquidation data...")
 
     data = process_latest_column_from_json()
 
     if not data:
-        raise RuntimeError(
-            "No liquidation data processed."
-        )
+        raise RuntimeError("No liquidation data processed.")
 
     if not data["whale_orders"]:
-        raise RuntimeError(
-            "No whale orders found."
-        )
+        raise RuntimeError("No whale orders found.")
 
-    # Ensure all 15 available orders are included
     orders = data["whale_orders"]
 
     print(f"Liquidation orders found: {len(orders)}")
 
-    # Prepare Telegram message
+    # Telegram message
     lines = [
         "<b>⚡ COINGLASS BTC | 48H</b>",
         "",
         f"🕒 {data['timestamp']}",
-        f"💰 Price: {format_usd(data['price'])}",
-        f"🔺 High: {format_usd(data['candle']['high'])}",
-        f"🔻 Low: {format_usd(data['candle']['low'])}",
+        f"💰 Price: ${data['price']:,.2f}",
+        f"🔺 High: ${data['candle']['high']:,.2f}",
+        f"🔻 Low: ${data['candle']['low']:,.2f}",
         "",
         "<b>🐋 LIQUIDATION WALLS</b>",
         ""
     ]
 
-    # Find highest and second-highest volume
     sorted_volumes = sorted(
         [order["volume"] for order in orders],
         reverse=True
@@ -216,24 +198,18 @@ async def main():
 
     for order in orders:
 
-        # Insert active price separator
+        # Active price separator
         if (
             not separator_inserted
             and order["price"] < data["price"]
         ):
 
             lines.extend([
-                f"<b>━━ ACTIVE: {format_usd(data['price'])} ━━</b>",
+                f"<b>━━ ACTIVE: ${data['price']:,.2f} ━━</b>",
                 ""
             ])
 
             separator_inserted = True
-
-        # Intensity bar
-        bar_len = max(
-            1,
-            int((order["volume"] / highest_vol) * 15)
-        )
 
         # Volume ranking
         rank = ""
@@ -247,21 +223,19 @@ async def main():
         ):
             rank = " 🥈 2ND"
 
-        # Format each liquidation order
+        # No intensity bars
         lines.append(
             f"<b>{order['side']}</b> | "
-            f"{format_usd(order['price'])}\n"
+            f"${order['price']:,.2f}\n"
             f"Δ {order['diff']:+,.2f} "
             f"({order['diff_pct']:+.2f}%) | "
-            f"{format_usd(order['volume'])}\n"
-            f"{'█' * bar_len}{rank}"
+            f"{format_volume(order['volume'])}{rank}"
         )
 
-    # Add active price if all orders are above current price
     if not separator_inserted:
         lines.extend([
             "",
-            f"<b>━━ ACTIVE: {format_usd(data['price'])} ━━</b>"
+            f"<b>━━ ACTIVE: ${data['price']:,.2f} ━━</b>"
         ])
 
     message = "\n".join(lines)

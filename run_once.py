@@ -55,6 +55,10 @@ async def main():
                 response.status if response else "Unknown"
             )
 
+            print("Response status:", response.status if response else None)
+            print("Final URL:", page.url)
+            print("Page title:", await page.title())
+            print("Page content:", (await page.locator("body").inner_text())[:5000])
             print("Waiting for page initialization...")
             await asyncio.sleep(15)
 

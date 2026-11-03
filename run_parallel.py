@@ -809,6 +809,10 @@ def send_telegram_message(message, market, timeframe):
 # ==================================================
 # CONSOLIDATED LIQUIDATION MESSAGE
 # ==================================================
+# ==================================================
+# CONSOLIDATED LIQUIDATION MESSAGE
+# TOP 2 SHORT + TOP 2 LONG PER MARKET / TIMEFRAME
+# ==================================================
 
 def build_consolidated_message(all_results):
 
@@ -830,6 +834,7 @@ def build_consolidated_message(all_results):
 
             result = market_data.get(timeframe)
 
+            # Skip failed or unavailable scrapers.
             if result is None or isinstance(result, BaseException):
                 continue
 
@@ -842,6 +847,10 @@ def build_consolidated_message(all_results):
             if not orders:
                 continue
 
+            # ------------------------------------------
+            # GET ALL SHORT LIQUIDATION WALLS
+            # ------------------------------------------
+
             short_orders = sorted(
                 [
                     order for order in orders
@@ -850,6 +859,10 @@ def build_consolidated_message(all_results):
                 key=lambda order: order["volume"],
                 reverse=True
             )[:2]
+
+            # ------------------------------------------
+            # GET ALL LONG LIQUIDATION WALLS
+            # ------------------------------------------
 
             long_orders = sorted(
                 [
@@ -860,7 +873,13 @@ def build_consolidated_message(all_results):
                 reverse=True
             )[:2]
 
+            # ------------------------------------------
+            # STORE TOP 2 SHORT WALLS
+            # ------------------------------------------
+
             for order in short_orders:
+
+                diff_pct = order.get("diff_pct", ((order["price"] - current_price) / current_price) * 100)
 
                 above_orders.append({
 
@@ -868,11 +887,18 @@ def build_consolidated_message(all_results):
                     "timeframe": timeframe,
                     "price": order["price"],
                     "volume": order["volume"],
+                    "diff_pct": diff_pct,
                     "side": "SHORT"
 
                 })
 
+            # ------------------------------------------
+            # STORE TOP 2 LONG WALLS
+            # ------------------------------------------
+
             for order in long_orders:
+
+                diff_pct = order.get("diff_pct", ((order["price"] - current_price) / current_price) * 100)
 
                 below_orders.append({
 
@@ -880,24 +906,43 @@ def build_consolidated_message(all_results):
                     "timeframe": timeframe,
                     "price": order["price"],
                     "volume": order["volume"],
+                    "diff_pct": diff_pct,
                     "side": "LONG"
 
                 })
 
+    # ------------------------------------------
+    # CHECK IF ANY DATA IS AVAILABLE
+    # ------------------------------------------
+
     if not active_prices:
         return None
 
+    # Use the average current price across successful
+    # scraper results for a consolidated reference price.
     active_price = sum(active_prices) / len(active_prices)
+
+    # ------------------------------------------
+    # SORT SHORT WALLS BY VOLUME
+    # ------------------------------------------
 
     above_orders.sort(
         key=lambda order: order["volume"],
         reverse=True
     )
 
+    # ------------------------------------------
+    # SORT LONG WALLS BY VOLUME
+    # ------------------------------------------
+
     below_orders.sort(
         key=lambda order: order["volume"],
         reverse=True
     )
+
+    # ------------------------------------------
+    # BUILD TELEGRAM MESSAGE
+    # ------------------------------------------
 
     lines = [
 
@@ -906,14 +951,21 @@ def build_consolidated_message(all_results):
 
     ]
 
+    # SHORT liquidation walls (above current price).
+
     for order in above_orders:
+
+        diff_sign = "+" if order["diff_pct"] >= 0 else ""
+        diff_str = f"{diff_sign}{order['diff_pct']:.2f}%"
 
         lines.append(
             f"🔴 <b>S</b> "
-            f"${order['price']:,.0f} | "
+            f"${order['price']:,.0f}({diff_str}) | "
             f"{format_volume(order['volume'])} | "
             f"{order['market']}{order['timeframe']}"
         )
+
+    # ACTIVE PRICE SEPARATOR.
 
     lines.extend([
 
@@ -923,18 +975,21 @@ def build_consolidated_message(all_results):
 
     ])
 
+    # LONG liquidation walls (below current price).
+
     for order in below_orders:
+
+        diff_sign = "+" if order["diff_pct"] >= 0 else ""
+        diff_str = f"{diff_sign}{order['diff_pct']:.2f}%"
 
         lines.append(
             f"🟢 <b>L</b> "
-            f"${order['price']:,.0f} | "
+            f"${order['price']:,.0f}({diff_str}) | "
             f"{format_volume(order['volume'])} | "
             f"{order['market']}{order['timeframe']}"
         )
 
     return "\n".join(lines)
-
-
 # ==================================================
 # SEND CONSOLIDATED TELEGRAM MESSAGE
 # ==================================================

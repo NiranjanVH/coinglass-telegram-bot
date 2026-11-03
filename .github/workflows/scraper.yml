@@ -1,15 +1,23 @@
-
 name: CoinGlass Telegram Scraper
 
 on:
   workflow_dispatch:
+  repository_dispatch:
+    types: [run_coinglass]
   schedule:
     - cron: "*/5 * * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coinglass-scraper
+  cancel-in-progress: false
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 4
+    timeout-minutes: 15
 
     steps:
       - name: Checkout repository
@@ -31,7 +39,7 @@ jobs:
         run: |
           echo "$SESSION" | base64 -d > coinglass_state.json
 
-      - name: Run scraper and send Telegram signal
+      - name: Run all four timeframes
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}

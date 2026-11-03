@@ -20,7 +20,7 @@ TARGET_URL = (
 
 
 def format_volume(value):
-    """Use K, M, B only for liquidation volume."""
+    """Format volume using K, M, B."""
     if value >= 1_000_000_000:
         return f"${value / 1_000_000_000:.2f}B"
     elif value >= 1_000_000:
@@ -128,7 +128,6 @@ async def main():
                         and len(candle.get("data", [])) >= len(x_axis)
                         and len(heatmap.get("data", [])) > 0
                     ):
-
                         raw_data = candidate
                         print("Valid chart data detected.")
                         break
@@ -154,6 +153,7 @@ async def main():
         finally:
             await browser.close()
 
+    # Process extracted data
     print("Processing liquidation data...")
 
     data = process_latest_column_from_json()
@@ -168,7 +168,7 @@ async def main():
 
     print(f"Liquidation orders found: {len(orders)}")
 
-    # Telegram message
+    # Telegram header
     lines = [
         "<b>⚡ COINGLASS BTC | 48H</b>",
         "",
@@ -181,6 +181,7 @@ async def main():
         ""
     ]
 
+    # Find highest and second-highest volumes
     sorted_volumes = sorted(
         [order["volume"] for order in orders],
         reverse=True
@@ -223,15 +224,17 @@ async def main():
         ):
             rank = " 🥈 2ND"
 
-        # No intensity bars
+        # Each liquidation record occupies ONE line
         lines.append(
             f"<b>{order['side']}</b> | "
-            f"${order['price']:,.2f}\n"
-            f"Δ {order['diff']:+,.2f} "
+            f"${order['price']:,.2f} | "
+            f"{order['diff']:+,.2f} "
             f"({order['diff_pct']:+.2f}%) | "
-            f"{format_volume(order['volume'])}{rank}"
+            f"{format_volume(order['volume'])}"
+            f"{rank}"
         )
 
+    # Add active price if no lower-priced order exists
     if not separator_inserted:
         lines.extend([
             "",
@@ -240,7 +243,7 @@ async def main():
 
     message = "\n".join(lines)
 
-    # Send Telegram message
+    # Telegram delivery
     print("Sending Telegram message...")
 
     token = os.environ["TELEGRAM_BOT_TOKEN"]

@@ -814,6 +814,11 @@ def send_telegram_message(message, market, timeframe):
 # TOP 2 SHORT + TOP 2 LONG PER MARKET / TIMEFRAME
 # ==================================================
 
+# ==================================================
+# CONSOLIDATED LIQUIDATION MESSAGE
+# TOP 2 SHORT + TOP 2 LONG PER MARKET / TIMEFRAME
+# ==================================================
+
 def build_consolidated_message(all_results):
 
     above_orders = []
@@ -879,7 +884,7 @@ def build_consolidated_message(all_results):
 
             for order in short_orders:
 
-                diff_pct = order.get("diff_pct", ((order["price"] - current_price) / current_price) * 100)
+                diff = order["price"] - current_price
 
                 above_orders.append({
 
@@ -887,7 +892,7 @@ def build_consolidated_message(all_results):
                     "timeframe": timeframe,
                     "price": order["price"],
                     "volume": order["volume"],
-                    "diff_pct": diff_pct,
+                    "diff": diff,
                     "side": "SHORT"
 
                 })
@@ -898,7 +903,7 @@ def build_consolidated_message(all_results):
 
             for order in long_orders:
 
-                diff_pct = order.get("diff_pct", ((order["price"] - current_price) / current_price) * 100)
+                diff = order["price"] - current_price
 
                 below_orders.append({
 
@@ -906,7 +911,7 @@ def build_consolidated_message(all_results):
                     "timeframe": timeframe,
                     "price": order["price"],
                     "volume": order["volume"],
-                    "diff_pct": diff_pct,
+                    "diff": diff,
                     "side": "LONG"
 
                 })
@@ -955,8 +960,8 @@ def build_consolidated_message(all_results):
 
     for order in above_orders:
 
-        diff_sign = "+" if order["diff_pct"] >= 0 else ""
-        diff_str = f"{diff_sign}{order['diff_pct']:.2f}%"
+        diff_sign = "+" if order["diff"] >= 0 else ""
+        diff_str = f"{diff_sign}${order['diff']:,.0f}"
 
         lines.append(
             f"🔴 <b>S</b> "
@@ -979,8 +984,8 @@ def build_consolidated_message(all_results):
 
     for order in below_orders:
 
-        diff_sign = "+" if order["diff_pct"] >= 0 else ""
-        diff_str = f"{diff_sign}{order['diff_pct']:.2f}%"
+        diff_sign = "+" if order["diff"] >= 0 else ""
+        diff_str = f"{diff_sign}${order['diff']:,.0f}"
 
         lines.append(
             f"🟢 <b>L</b> "
@@ -990,6 +995,8 @@ def build_consolidated_message(all_results):
         )
 
     return "\n".join(lines)
+
+
 # ==================================================
 # SEND CONSOLIDATED TELEGRAM MESSAGE
 # ==================================================

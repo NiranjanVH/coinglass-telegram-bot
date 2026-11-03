@@ -4,7 +4,7 @@ import os
 GITHUB_TOKEN = os.getenv("CGit_Token")
 
 OWNER = "NiranjanVH"
-REPO = "coinglass-telegram-bo"
+REPO = "coinglass-telegram-bot"
 
 def trigger_workflow():
     url = f"https://api.github.com/repos/{OWNER}/{REPO}/dispatches"

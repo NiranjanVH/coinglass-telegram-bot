@@ -4,8 +4,6 @@ on:
   workflow_dispatch:
   repository_dispatch:
     types: [run_coinglass]
-  schedule:
-    - cron: "*/5 * * * *"
 
 permissions:
   contents: read

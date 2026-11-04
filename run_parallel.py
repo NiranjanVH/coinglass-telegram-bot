@@ -1013,7 +1013,7 @@ async def main():
             all_results[market] = result
 
     # --------------------------------------------------
-    # STEP 2: IDENTIFY FAILURES & RETRY THEM ONE-BY-ONE
+    # STEP 2: RETRY FAILED TIMEFRAMES IN PARALLEL BY MARKET
     # --------------------------------------------------
 
     failed_jobs = []
@@ -1026,21 +1026,37 @@ async def main():
 
     if failed_jobs:
         print("\n" + "=" * 65)
-        print(f"RETRYING {len(failed_jobs)} FAILED TIMEFRAME(S)...")
+        print(f"RETRYING {len(failed_jobs)} FAILED TIMEFRAME(S) IN BATCHES...")
         print("=" * 65)
 
+        failed_timeframes_by_market = {}
         for market, timeframe in failed_jobs:
-            print(f"\n[RETRY] Starting background scrape for {market} {timeframe}...")
-            try:
-                # Scrape single timeframe using its target url
-                retry_res = await scrape_market(market, markets[market], [timeframe])
-                if timeframe in retry_res and not isinstance(retry_res[timeframe], BaseException):
-                    all_results[market][timeframe] = retry_res[timeframe]
-                    print(f"[RETRY SUCCESS] {market} {timeframe} recovered successfully!")
+            failed_timeframes_by_market.setdefault(market, []).append(timeframe)
+
+        retry_markets = list(failed_timeframes_by_market)
+        retry_results = await asyncio.gather(
+            *[
+                scrape_market(
+                    market,
+                    markets[market],
+                    failed_timeframes_by_market[market]
+                )
+                for market in retry_markets
+            ],
+            return_exceptions=True
+        )
+
+        for market, retry_result in zip(retry_markets, retry_results):
+            if isinstance(retry_result, BaseException):
+                print(f"[RETRY ERROR] {market}: {retry_result}")
+                continue
+
+            for timeframe, result in retry_result.items():
+                if isinstance(result, BaseException):
+                    print(f"[RETRY FAILED] {market} {timeframe} failed again: {result}")
                 else:
-                    print(f"[RETRY FAILED] {market} {timeframe} failed again.")
-            except Exception as e:
-                print(f"[RETRY ERROR] {market} {timeframe}: {e}")
+                    all_results[market][timeframe] = result
+                    print(f"[RETRY SUCCESS] {market} {timeframe} recovered successfully!")
 
     successful = 0
     errors = []

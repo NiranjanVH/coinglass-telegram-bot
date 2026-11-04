@@ -167,6 +167,8 @@ async def extract_updated_chart(page, previous_fingerprint):
     return None
 
 
+
+
 async def scrape_market_timeframes(browser, market, url, timeframes):
     """Uses one page and one browser context for all timeframes."""
 
@@ -214,7 +216,7 @@ async def scrape_market_timeframes(browser, market, url, timeframes):
             return results, list(timeframes)
 
         previous_fingerprint = chart_fingerprint(baseline)
-        current_timeframe = "48H"  # CoinGlass initial timeframe
+        current_timeframe = "48H"
 
         for timeframe in timeframes:
 
@@ -231,12 +233,6 @@ async def scrape_market_timeframes(browser, market, url, timeframes):
                         previous_fingerprint
                     )
 
-                if data is not None:
-                    current_timeframe = timeframe
-
-                await select_timeframe(page, timeframe)
-
-
                 if data is None:
                     print(f"{market} {timeframe}: Extraction failed.")
                     failed.append(timeframe)
@@ -244,6 +240,8 @@ async def scrape_market_timeframes(browser, market, url, timeframes):
 
                 fingerprint = chart_fingerprint(data)
                 previous_fingerprint = fingerprint
+                current_timeframe = timeframe
+                baseline = data
 
                 results[timeframe] = data
 
@@ -263,6 +261,9 @@ async def scrape_market_timeframes(browser, market, url, timeframes):
 
     finally:
         await context.close()
+
+    return results, failed
+
 
 
 async def run_all_markets():
@@ -367,5 +368,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-    return results, failed    

@@ -813,7 +813,7 @@ def send_telegram_message(message, market, timeframe):
 
 # ==================================================
 # CONSOLIDATED LIQUIDATION MESSAGE
-# TWO TABLES PER ROW | TOP 5 WALLS | ⭐ HIGHEST VOLUME
+# COMPACT TWO-COLUMN MOBILE FORMAT
 # ==================================================
 
 def build_consolidated_message(all_results):
@@ -824,11 +824,11 @@ def build_consolidated_message(all_results):
     def build_panel(result, timeframe):
 
         if result is None or isinstance(result, BaseException):
-            return [
-                f"┌── {timeframe} ──┐",
-                "│ No data        │",
-                "└────────────────┘"
-            ]
+            return {
+                "header": timeframe,
+                "price": "N/A",
+                "rows": []
+            }
 
         current_price = result["price"]
 
@@ -847,41 +847,18 @@ def build_consolidated_message(all_results):
                 else "🟢"
             )
 
-            star = " ⭐" if index == 0 else ""
+            star = "⭐" if index == 0 else ""
 
             rows.append(
                 f"{emoji}{order['price']:,.0f}|"
-                f"{format_volume(order['volume'])}{star}"
+                f"{format_volume(order['volume']).replace('$', '')}{star}"
             )
 
-        if not rows:
-            rows = ["No walls"]
-
-        header = f"Price:${current_price:,.0f}"
-
-        width = max(
-            len(header),
-            len("Price|Vol($)"),
-            *(len(row) for row in rows)
-        )
-
-        lines = [
-            f"┌── {timeframe} " +
-            "─" * max(0, width - len(timeframe) - 2) + "┐",
-
-            f"│{header:<{width}}│",
-
-            f"│{'Price|Vol($)':<{width}}│",
-
-            f"├{'─' * width}┤"
-        ]
-
-        for row in rows:
-            lines.append(f"│{row:<{width}}│")
-
-        lines.append(f"└{'─' * width}┘")
-
-        return lines
+        return {
+            "header": timeframe,
+            "price": f"${current_price:,.0f}",
+            "rows": rows
+        }
 
     messages = []
 
@@ -898,11 +875,12 @@ def build_consolidated_message(all_results):
         }
 
         lines = [
-            f"🐋 BTC LIQUIDATION - {market}",
+            f"🐋 BTC LIQ {market}",
             ""
         ]
 
-        # Two tables per row.
+        # First pair: 12H and 24H
+        # Second pair: 48H and 3D
 
         for first, second in [
             ("12H", "24H"),
@@ -912,24 +890,30 @@ def build_consolidated_message(all_results):
             left = panels[first]
             right = panels[second]
 
-            left_width = max(len(line) for line in left)
+            lines.append(
+                f"{left['header']:<16}{right['header']}"
+            )
 
-            height = max(len(left), len(right))
+            lines.append(
+                f"{left['price']:<16}{right['price']}"
+            )
 
-            for i in range(height):
+            for i in range(5):
 
-                left_line = (
-                    left[i] if i < len(left) else ""
+                left_row = (
+                    left["rows"][i]
+                    if i < len(left["rows"])
+                    else ""
                 )
 
-                right_line = (
-                    right[i] if i < len(right) else ""
+                right_row = (
+                    right["rows"][i]
+                    if i < len(right["rows"])
+                    else ""
                 )
 
                 lines.append(
-                    left_line.ljust(left_width) +
-                    "  " +
-                    right_line
+                    f"{left_row:<16}{right_row}"
                 )
 
             lines.append("")

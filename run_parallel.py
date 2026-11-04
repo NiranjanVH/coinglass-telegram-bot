@@ -29,6 +29,7 @@ VIEWPORT = {
 }
 
 TIMEFRAMES = ["48H", "12H", "24H", "3D", "1W", "1M"]
+SCRAPE_CONCURRENCY = 4
 
 CHART_SELECTOR = ".echarts-for-react"
 
@@ -407,6 +408,22 @@ async def scrape_market_timeframe(
     browser,
     market,
     timeframe,
+    target_url,
+    semaphore
+):
+    async with semaphore:
+        return await _scrape_market_timeframe(
+            browser,
+            market,
+            timeframe,
+            target_url
+        )
+
+
+async def _scrape_market_timeframe(
+    browser,
+    market,
+    timeframe,
     target_url
 ):
 
@@ -516,12 +533,34 @@ async def scrape_market_timeframe(
             timeframe
         )
 
+        chart_ready = await wait_for_chart(
+            page,
+            market,
+            timeframe,
+            timeout=CHART_WAIT_TIMEOUT
+        )
+
+        if not chart_ready:
+            await page.screenshot(
+                path=(
+                    f"debug_failed_{market.lower()}_"
+                    f"{timeframe.lower()}.png"
+                ),
+                full_page=True
+            )
+
+            raise RuntimeError(
+                f"[{market} {timeframe}] "
+                "Chart did not reappear after selecting timeframe."
+            )
+
         print(
             f"[{market} {timeframe}] "
             "Waiting for chart data..."
         )
 
         raw_data = None
+        failure_reason = "Chart data not ready after all retries."
 
         for attempt in range(
             1,
@@ -549,6 +588,21 @@ async def scrape_market_timeframe(
 
                 await asyncio.sleep(RETRY_DELAY)
                 continue
+
+            if (
+                isinstance(candidate, dict)
+                and candidate.get("error") == "Chart element not found in DOM."
+            ):
+                chart_ready = await wait_for_chart(
+                    page,
+                    market,
+                    timeframe,
+                    timeout=5000
+                )
+
+                if not chart_ready:
+                    failure_reason = "Chart element did not return during extraction."
+                    break
 
             if is_valid_chart_data(candidate):
 
@@ -579,8 +633,7 @@ async def scrape_market_timeframe(
             )
 
             raise RuntimeError(
-                f"[{market} {timeframe}] "
-                "Chart data not ready after all retries."
+                f"[{market} {timeframe}] {failure_reason}"
             )
 
         with open(
@@ -627,7 +680,12 @@ async def scrape_market_timeframe(
 # SCRAPE ONE MARKET - FOUR PARALLEL TIMEFRAMES
 # ==================================================
 
-async def scrape_market(market, target_url, timeframes=TIMEFRAMES):
+async def scrape_market(
+    market,
+    target_url,
+    timeframes,
+    semaphore
+):
 
     print("\n" + "=" * 60)
     print(f"STARTING {market} SCRAPERS ({', '.join(timeframes)})")
@@ -659,7 +717,8 @@ async def scrape_market(market, target_url, timeframes=TIMEFRAMES):
                         browser,
                         market,
                         timeframe,
-                        target_url
+                        target_url,
+                        semaphore
                     )
 
                     for timeframe in timeframes
@@ -972,6 +1031,7 @@ async def main():
     }
 
     all_results = {"PAIR": {}, "SYMBOL": {}}
+    scrape_semaphore = asyncio.Semaphore(SCRAPE_CONCURRENCY)
 
     # --------------------------------------------------
     # STEP 1: RUN INITIAL PARALLEL SCRAPERS
@@ -979,7 +1039,12 @@ async def main():
 
     market_results = await asyncio.gather(
         *[
-            scrape_market(market, url, TIMEFRAMES)
+            scrape_market(
+                market,
+                url,
+                TIMEFRAMES,
+                scrape_semaphore
+            )
             for market, url in markets.items()
         ],
         return_exceptions=True
@@ -1025,7 +1090,8 @@ async def main():
                 scrape_market(
                     market,
                     markets[market],
-                    failed_timeframes_by_market[market]
+                    failed_timeframes_by_market[market],
+                    scrape_semaphore
                 )
                 for market in retry_markets
             ],

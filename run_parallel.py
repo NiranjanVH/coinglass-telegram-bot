@@ -32,9 +32,9 @@ TIMEFRAMES = ["48H", "12H", "24H", "3D"]
 
 CHART_SELECTOR = ".echarts-for-react"
 
-MAX_EXTRACTION_ATTEMPTS = 8
+MAX_EXTRACTION_ATTEMPTS = 60
 CHART_WAIT_TIMEOUT = 20000
-RETRY_DELAY = 10
+RETRY_DELAY = 1
 
 
 # ==================================================
@@ -497,14 +497,6 @@ async def scrape_market_timeframe(
                 "Chart did not appear after 60 seconds."
             )
 
-        await page.screenshot(
-            path=(
-                f"debug_{market.lower()}_"
-                f"{timeframe.lower()}.png"
-            ),
-            full_page=True
-        )
-
         await select_timeframe(
             page,
             timeframe
@@ -512,10 +504,8 @@ async def scrape_market_timeframe(
 
         print(
             f"[{market} {timeframe}] "
-            "Hydrating chart..."
+            "Waiting for chart data..."
         )
-
-        await asyncio.sleep(45)
 
         raw_data = None
 
@@ -529,24 +519,6 @@ async def scrape_market_timeframe(
                 f"Extraction attempt "
                 f"{attempt}/{MAX_EXTRACTION_ATTEMPTS}"
             )
-
-            chart_ready = await wait_for_chart(
-                page,
-                market,
-                timeframe,
-                timeout=CHART_WAIT_TIMEOUT
-            )
-
-            if not chart_ready:
-
-                print(
-                    f"[{market} {timeframe}] "
-                    "Chart temporarily unavailable. "
-                    "Retrying..."
-                )
-
-                await asyncio.sleep(RETRY_DELAY)
-                continue
 
             try:
 

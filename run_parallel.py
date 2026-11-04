@@ -809,241 +809,181 @@ def send_telegram_message(message, market, timeframe):
 # ==================================================
 # CONSOLIDATED LIQUIDATION MESSAGE
 # ==================================================
-# ==================================================
-# CONSOLIDATED LIQUIDATION MESSAGE
-# TOP 2 SHORT + TOP 2 LONG PER MARKET / TIMEFRAME
-# ==================================================
+
 
 # ==================================================
 # CONSOLIDATED LIQUIDATION MESSAGE
-# TOP 2 SHORT + TOP 2 LONG PER MARKET / TIMEFRAME
+# TWO TABLES PER ROW | TOP 5 WALLS | ⭐ HIGHEST VOLUME
 # ==================================================
 
 def build_consolidated_message(all_results):
 
-    above_orders = []
-    below_orders = []
+    timeframe_order = ["12H", "24H", "48H", "3D"]
+    market_order = ["PAIR", "SYMBOL"]
 
-    active_prices = []
+    def build_panel(result, timeframe):
 
-    timeframe_order = ["48H", "12H", "24H", "3D"]
-    market_order = ["SYMBOL", "PAIR"]
+        if result is None or isinstance(result, BaseException):
+            return [
+                f"┌── {timeframe} ──┐",
+                "│ No data        │",
+                "└────────────────┘"
+            ]
+
+        current_price = result["price"]
+
+        orders = sorted(
+            result.get("whale_orders", []),
+            key=lambda x: x["volume"],
+            reverse=True
+        )[:5]
+
+        rows = []
+
+        for index, order in enumerate(orders):
+
+            emoji = (
+                "🔴" if order["side"] == "SHORT LIQ"
+                else "🟢"
+            )
+
+            star = " ⭐" if index == 0 else ""
+
+            rows.append(
+                f"{emoji}{order['price']:,.0f}|"
+                f"{format_volume(order['volume'])}{star}"
+            )
+
+        if not rows:
+            rows = ["No walls"]
+
+        header = f"Price:${current_price:,.0f}"
+
+        width = max(
+            len(header),
+            len("Price|Vol($)"),
+            *(len(row) for row in rows)
+        )
+
+        lines = [
+            f"┌── {timeframe} " +
+            "─" * max(0, width - len(timeframe) - 2) + "┐",
+
+            f"│{header:<{width}}│",
+
+            f"│{'Price|Vol($)':<{width}}│",
+
+            f"├{'─' * width}┤"
+        ]
+
+        for row in rows:
+            lines.append(f"│{row:<{width}}│")
+
+        lines.append(f"└{'─' * width}┘")
+
+        return lines
+
+    messages = []
 
     for market in market_order:
 
         market_data = all_results.get(market, {})
 
-        prefix = "S" if market == "SYMBOL" else "P"
+        panels = {
+            tf: build_panel(
+                market_data.get(tf),
+                tf
+            )
+            for tf in timeframe_order
+        }
 
-        for timeframe in timeframe_order:
+        lines = [
+            f"🐋 BTC LIQUIDATION - {market}",
+            ""
+        ]
 
-            result = market_data.get(timeframe)
+        # Two tables per row.
 
-            # Skip failed or unavailable scrapers.
-            if result is None or isinstance(result, BaseException):
-                continue
+        for first, second in [
+            ("12H", "24H"),
+            ("48H", "3D")
+        ]:
 
-            current_price = result["price"]
+            left = panels[first]
+            right = panels[second]
 
-            active_prices.append(current_price)
+            left_width = max(len(line) for line in left)
 
-            orders = result.get("whale_orders", [])
+            height = max(len(left), len(right))
 
-            if not orders:
-                continue
+            for i in range(height):
 
-            # ------------------------------------------
-            # GET ALL SHORT LIQUIDATION WALLS
-            # ------------------------------------------
+                left_line = (
+                    left[i] if i < len(left) else ""
+                )
 
-            short_orders = sorted(
-                [
-                    order for order in orders
-                    if order["side"] == "SHORT LIQ"
-                ],
-                key=lambda order: order["volume"],
-                reverse=True
-            )[:2]
+                right_line = (
+                    right[i] if i < len(right) else ""
+                )
 
-            # ------------------------------------------
-            # GET ALL LONG LIQUIDATION WALLS
-            # ------------------------------------------
+                lines.append(
+                    left_line.ljust(left_width) +
+                    "  " +
+                    right_line
+                )
 
-            long_orders = sorted(
-                [
-                    order for order in orders
-                    if order["side"] == "LONG LIQ"
-                ],
-                key=lambda order: order["volume"],
-                reverse=True
-            )[:2]
+            lines.append("")
 
-            # ------------------------------------------
-            # STORE TOP 2 SHORT WALLS
-            # ------------------------------------------
-
-            for order in short_orders:
-
-                diff = order["price"] - current_price
-
-                above_orders.append({
-
-                    "market": prefix,
-                    "timeframe": timeframe,
-                    "price": order["price"],
-                    "volume": order["volume"],
-                    "diff": diff,
-                    "side": "SHORT"
-
-                })
-
-            # ------------------------------------------
-            # STORE TOP 2 LONG WALLS
-            # ------------------------------------------
-
-            for order in long_orders:
-
-                diff = order["price"] - current_price
-
-                below_orders.append({
-
-                    "market": prefix,
-                    "timeframe": timeframe,
-                    "price": order["price"],
-                    "volume": order["volume"],
-                    "diff": diff,
-                    "side": "LONG"
-
-                })
-
-    # ------------------------------------------
-    # CHECK IF ANY DATA IS AVAILABLE
-    # ------------------------------------------
-
-    if not active_prices:
-        return None
-
-    # Use the average current price across successful
-    # scraper results for a consolidated reference price.
-    active_price = sum(active_prices) / len(active_prices)
-
-    # ------------------------------------------
-    # SORT SHORT WALLS BY VOLUME
-    # ------------------------------------------
-
-    above_orders.sort(
-        key=lambda order: order["volume"],
-        reverse=True
-    )
-
-    # ------------------------------------------
-    # SORT LONG WALLS BY VOLUME
-    # ------------------------------------------
-
-    below_orders.sort(
-        key=lambda order: order["volume"],
-        reverse=True
-    )
-
-    # ------------------------------------------
-    # BUILD TELEGRAM MESSAGE
-    # ------------------------------------------
-
-    lines = [
-
-        "<b>🐋 BTC CONSOLIDATED LIQUIDATION WALLS</b>",
-        ""
-
-    ]
-
-    # SHORT liquidation walls (above current price).
-
-    for order in above_orders:
-
-        diff_sign = "+" if order["diff"] >= 0 else ""
-        diff_str = f"{diff_sign}${order['diff']:,.0f}"
-
-        lines.append(
-            f"🔴 <b>S</b> "
-            f"${order['price']:,.0f}({diff_str}) | "
-            f"{format_volume(order['volume'])} | "
-            f"{order['market']}{order['timeframe']}"
+        message = (
+            f"<b>{lines[0]}</b>\n"
+            "<pre>" +
+            "\n".join(lines[1:]) +
+            "</pre>"
         )
 
-    # ACTIVE PRICE SEPARATOR.
+        messages.append(message)
 
-    lines.extend([
-
-        "",
-        f"<b>━━ ACTIVE: ${active_price:,.2f} ━━</b>",
-        ""
-
-    ])
-
-    # LONG liquidation walls (below current price).
-
-    for order in below_orders:
-
-        diff_sign = "+" if order["diff"] >= 0 else ""
-        diff_str = f"{diff_sign}${order['diff']:,.0f}"
-
-        lines.append(
-            f"🟢 <b>L</b> "
-            f"${order['price']:,.0f}({diff_str}) | "
-            f"{format_volume(order['volume'])} | "
-            f"{order['market']}{order['timeframe']}"
-        )
-
-    return "\n".join(lines)
+    return messages
 
 
 # ==================================================
-# SEND CONSOLIDATED TELEGRAM MESSAGE
+# SEND CONSOLIDATED TELEGRAM MESSAGES
 # ==================================================
 
-def send_consolidated_telegram_message(message):
+def send_consolidated_telegram_message(messages):
 
-    if not message:
-        print(
-            "[CONSOLIDATED] No valid data available."
-        )
+    if not messages:
+        print("[CONSOLIDATED] No valid data available.")
         return
 
     token = os.environ["TELEGRAM_BOT_TOKEN"]
-
     chat_id = os.environ["TELEGRAM_CHAT_ID"]
 
-    response = requests.post(
+    for index, message in enumerate(messages, 1):
 
-        f"https://api.telegram.org/bot{token}/sendMessage",
-
-        json={
-
-            "chat_id": chat_id,
-
-            "text": message,
-
-            "parse_mode": "HTML"
-
-        },
-
-        timeout=30
-
-    )
-
-    response.raise_for_status()
-
-    result = response.json()
-
-    if not result.get("ok"):
-
-        raise RuntimeError(
-            f"Consolidated Telegram error: {result}"
+        response = requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={
+                "chat_id": chat_id,
+                "text": message,
+                "parse_mode": "HTML"
+            },
+            timeout=30
         )
 
-    print(
-        "[CONSOLIDATED] Telegram message sent successfully!"
-    )
+        response.raise_for_status()
+
+        result = response.json()
+
+        if not result.get("ok"):
+            raise RuntimeError(
+                f"Consolidated Telegram error: {result}"
+            )
+
+        print(
+            f"[CONSOLIDATED] Message {index}/{len(messages)} sent successfully!"
+        )
+
 
 
 # ==================================================

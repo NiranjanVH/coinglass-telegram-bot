@@ -28,7 +28,7 @@ VIEWPORT = {
     "height": 900
 }
 
-TIMEFRAMES = ["48H", "12H", "24H", "3D"]
+TIMEFRAMES = ["48H", "12H", "24H", "3D", "1W", "1M"]
 
 CHART_SELECTOR = ".echarts-for-react"
 
@@ -66,6 +66,8 @@ async def select_timeframe(page, timeframe):
     dropdown = page.locator(
         "button.MuiSelect-button:has-text('hour'), "
         "button.MuiSelect-button:has-text('day'), "
+        "button.MuiSelect-button:has-text('week'), "
+        "button.MuiSelect-button:has-text('month'), "
         "button.MuiSelect-button:has-text('24 hour')"
     ).first
 
@@ -102,6 +104,18 @@ async def select_timeframe(page, timeframe):
             "li[role='option']:has-text('3 day')",
             "div[role='option']:has-text('3 day')",
             "[role='option']:has-text('3d')"
+        ],
+
+        "1W": [
+            "li[role='option']:has-text('1 week')",
+            "div[role='option']:has-text('1 week')",
+            "[role='option']:has-text('1w')"
+        ],
+
+        "1M": [
+            "li[role='option']:has-text('1 month')",
+            "div[role='option']:has-text('1 month')",
+            "[role='option']:has-text('1m')"
         ]
 
     }
@@ -790,7 +804,7 @@ def send_telegram_message(message, market, timeframe):
 
 def build_consolidated_message(all_results):
 
-    timeframe_order = ["12H", "24H", "48H", "3D"]
+    timeframe_order = ["12H", "24H", "48H", "3D", "1W", "1M"]
     market_order = ["PAIR", "SYMBOL"]
 
     def build_panel(result, timeframe):
@@ -851,12 +865,12 @@ def build_consolidated_message(all_results):
             ""
         ]
 
-        # First pair: 12H and 24H
-        # Second pair: 48H and 3D
+        # Pair adjacent timeframes for a compact mobile layout.
 
         for first, second in [
             ("12H", "24H"),
-            ("48H", "3D")
+            ("48H", "3D"),
+            ("1W", "1M")
         ]:
 
             left = panels[first]

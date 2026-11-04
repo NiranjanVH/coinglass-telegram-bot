@@ -214,18 +214,28 @@ async def scrape_market_timeframes(browser, market, url, timeframes):
             return results, list(timeframes)
 
         previous_fingerprint = chart_fingerprint(baseline)
+        current_timeframe = "48H"  # CoinGlass initial timeframe
 
         for timeframe in timeframes:
 
             print(f"\n{market} - Processing {timeframe}")
 
             try:
+                if timeframe == current_timeframe:
+                    data = baseline
+                else:
+                    await select_timeframe(page, timeframe)
+
+                    data = await extract_updated_chart(
+                        page,
+                        previous_fingerprint
+                    )
+
+                if data is not None:
+                    current_timeframe = timeframe
+
                 await select_timeframe(page, timeframe)
 
-                data = await extract_updated_chart(
-                    page,
-                    previous_fingerprint
-                )
 
                 if data is None:
                     print(f"{market} {timeframe}: Extraction failed.")

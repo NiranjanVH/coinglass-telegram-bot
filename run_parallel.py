@@ -170,22 +170,23 @@ async def extract_updated_chart(page, previous_fingerprint):
 
 
 async def scrape_market_timeframes(browser, market, url, timeframes):
-    """Uses one page and one browser context for all timeframes."""
+    """Uses one browser context and one page for all timeframes."""
 
     results = {}
     failed = []
-
-    context_args = {
-        "viewport": VIEWPORT,
-    }
-
-    if os.path.exists(STORAGE_STATE):
-        context_args["storage_state"] = STORAGE_STATE
-
-    context = await browser.new_context(**context_args)
-    page = await context.new_page()
+    context = None
 
     try:
+        context_args = {
+            "viewport": VIEWPORT,
+        }
+
+        if os.path.exists(STORAGE_STATE):
+            context_args["storage_state"] = STORAGE_STATE
+
+        context = await browser.new_context(**context_args)
+        page = await context.new_page()
+
         print(f"\nOpening {market} market...")
 
         await page.goto(
@@ -194,25 +195,30 @@ async def scrape_market_timeframes(browser, market, url, timeframes):
             timeout=60000
         )
 
+        # Preserve the original visible-chart requirement.
         await page.locator(CHART_SELECTOR).first.wait_for(
             state="visible",
-            timeout=30000
+            timeout=60000
         )
 
-        # Wait for the initial chart dataset.
+        # Wait for valid initial chart data.
         baseline = None
 
-        for _ in range(20):
-            candidate = await page.evaluate(JS_EXTRACT_SCRIPT)
+        for attempt in range(40):
+            try:
+                candidate = await page.evaluate(JS_EXTRACT_SCRIPT)
 
-            if is_valid_chart_data(candidate):
-                baseline = candidate
-                break
+                if is_valid_chart_data(candidate):
+                    baseline = candidate
+                    break
+
+            except Exception as e:
+                print(f"{market}: Initial extraction attempt {attempt + 1}: {e}")
 
             await asyncio.sleep(1)
 
         if baseline is None:
-            print(f"{market}: Initial chart failed to load.")
+            print(f"{market}: Initial chart data unavailable.")
             return results, list(timeframes)
 
         previous_fingerprint = chart_fingerprint(baseline)
@@ -225,6 +231,7 @@ async def scrape_market_timeframes(browser, market, url, timeframes):
             try:
                 if timeframe == current_timeframe:
                     data = baseline
+
                 else:
                     await select_timeframe(page, timeframe)
 
@@ -239,6 +246,12 @@ async def scrape_market_timeframes(browser, market, url, timeframes):
                     continue
 
                 fingerprint = chart_fingerprint(data)
+
+                if not fingerprint:
+                    print(f"{market} {timeframe}: Invalid chart data.")
+                    failed.append(timeframe)
+                    continue
+
                 previous_fingerprint = fingerprint
                 current_timeframe = timeframe
                 baseline = data
@@ -259,11 +272,18 @@ async def scrape_market_timeframes(browser, market, url, timeframes):
                 print(f"{market} {timeframe}: {e}")
                 failed.append(timeframe)
 
+    except Exception as e:
+        print(f"{market}: Market loading failed: {e}")
+
+        for timeframe in timeframes:
+            if timeframe not in results and timeframe not in failed:
+                failed.append(timeframe)
+
     finally:
-        await context.close()
+        if context:
+            await context.close()
 
     return results, failed
-
 
 
 async def run_all_markets():
@@ -287,7 +307,7 @@ async def run_all_markets():
         all_failures = {}
 
         try:
-            # Run PAIR and SYMBOL simultaneously.
+            # Initial parallel scraping.
             tasks = [
                 scrape_market_timeframes(
                     browser,
@@ -307,6 +327,7 @@ async def run_all_markets():
 
                 if isinstance(output, Exception):
                     print(f"{market} failed: {output}")
+
                     all_results[market] = {}
                     all_failures[market] = TIMEFRAMES.copy()
                     continue
@@ -316,28 +337,31 @@ async def run_all_markets():
                 all_results[market] = results
                 all_failures[market] = failed
 
-            # Retry only failed timeframes.
-            for market, failed in all_failures.items():
+            # Retry failed timeframes once.
+            for market in markets:
+
+                failed = all_failures.get(market, [])
 
                 if not failed:
                     continue
 
-                print(
-                    f"\nRetrying {market}: {failed}"
-                )
+                print(f"\nRetrying {market}: {failed}")
 
-                retry_results, still_failed = (
-                    await scrape_market_timeframes(
-                        browser,
-                        market,
-                        markets[market],
-                        failed
+                try:
+                    retry_results, still_failed = (
+                        await scrape_market_timeframes(
+                            browser,
+                            market,
+                            markets[market],
+                            failed
+                        )
                     )
-                )
 
-                all_results[market].update(retry_results)
+                    all_results[market].update(retry_results)
+                    all_failures[market] = still_failed
 
-                all_failures[market] = still_failed
+                except Exception as e:
+                    print(f"{market} retry failed: {e}")
 
             return all_results, all_failures
 

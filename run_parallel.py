@@ -319,6 +319,25 @@ def process_chart_data(raw_data):
     if current_price <= 0:
         return None
 
+    populated_x_by_y = {}
+    for point in heatmap_series.get("data", []):
+        if not isinstance(point, (list, tuple)) or len(point) < 3:
+            continue
+
+        try:
+            x_index = int(point[0])
+            y_index = int(point[1])
+            volume = float(point[2])
+        except (TypeError, ValueError):
+            continue
+
+        if (
+            0 <= x_index < len(x_axis)
+            and 0 <= y_index < len(y_axis)
+            and volume > 0
+        ):
+            populated_x_by_y.setdefault(y_index, set()).add(x_index)
+
     orders = []
 
     for point in heatmap_series.get("data", []):
@@ -353,11 +372,48 @@ def process_chart_data(raw_data):
 
         diff = price_level - current_price
 
+        populated_columns = populated_x_by_y.get(y_index, set())
+        first_x_index = last_idx
+        while first_x_index - 1 in populated_columns:
+            first_x_index -= 1
+
+        consecutive_columns = last_idx - first_x_index + 1
+        first_touch_x_index = None
+
+        for history_x_index in range(first_x_index, last_idx + 1):
+            if history_x_index >= len(candle_data):
+                continue
+
+            historical_candle = candle_data[history_x_index]
+            if (
+                not isinstance(historical_candle, (list, tuple))
+                or len(historical_candle) < 4
+            ):
+                continue
+
+            try:
+                candle_low = float(historical_candle[2])
+                candle_high = float(historical_candle[3])
+            except (TypeError, ValueError):
+                continue
+
+            if candle_low <= price_level <= candle_high:
+                first_touch_x_index = history_x_index
+                break
+
+        if first_touch_x_index is not None:
+            elapsed_columns = first_touch_x_index - first_x_index + 1
+            remaining_columns = max(0, consecutive_columns - elapsed_columns)
+        else:
+            remaining_columns = consecutive_columns
+
         orders.append({
 
             "price": price_level,
 
             "volume": volume,
+
+            "bar_columns": remaining_columns,
 
             "side": (
                 "SHORT LIQ"
@@ -376,13 +432,7 @@ def process_chart_data(raw_data):
     if not orders:
         return None
 
-    top_orders = sorted(
-        orders,
-        key=lambda item: item["volume"],
-        reverse=True
-    )[:15]
-
-    top_orders.sort(
+    orders.sort(
         key=lambda item: item["price"],
         reverse=True
     )
@@ -395,7 +445,7 @@ def process_chart_data(raw_data):
 
         "candle": candle,
 
-        "whale_orders": top_orders
+        "whale_orders": orders
 
     }
 
@@ -748,7 +798,35 @@ async def scrape_market(
 
 def build_telegram_message(data, timeframe, market):
 
-    orders = data["whale_orders"]
+    all_orders = data["whale_orders"]
+    nearest_orders = sorted(
+        all_orders,
+        key=lambda order: abs(order["price"] - data["price"])
+    )[:5]
+
+    highest_volume_orders = sorted(
+        all_orders,
+        key=lambda order: order["volume"],
+        reverse=True
+    )
+
+    if highest_volume_orders and not any(
+        highest_volume_orders[0] is order
+        for order in nearest_orders
+    ):
+        nearest_order_ids = {id(order) for order in nearest_orders}
+        nearest_orders.extend(
+            order
+            for order in highest_volume_orders
+            if id(order) not in nearest_order_ids
+        )
+        nearest_orders = nearest_orders[:7]
+
+    orders = sorted(
+        nearest_orders,
+        key=lambda order: order["price"],
+        reverse=True
+    )
 
     lines = [
         f"<b>⚡ COINGLASS BTC | {market} | {timeframe}</b>",
@@ -762,13 +840,15 @@ def build_telegram_message(data, timeframe, market):
         ""
     ]
 
-    volumes = sorted(
-        [order["volume"] for order in orders],
+    ranked_orders = sorted(
+        orders,
+        key=lambda order: order["volume"],
         reverse=True
     )
-
-    highest = volumes[0] if volumes else 0
-    second = volumes[1] if len(volumes) > 1 else 0
+    rank_by_id = {
+        id(order): rank
+        for rank, order in enumerate(ranked_orders[:2], start=1)
+    }
 
     separator_inserted = False
 
@@ -789,20 +869,16 @@ def build_telegram_message(data, timeframe, market):
         is_long = order["side"] == "LONG LIQ"
 
         emoji = "🟢" if is_long else "🔴"
-        side = "L" if is_long else "S"
 
-        rank = ""
-
-        if order["volume"] == highest:
-            rank = " ⭐"
-
-        elif order["volume"] == second and second > 0:
-            rank = " 🥈"
+        rank = {
+            1: "⭐",
+            2: "🥈",
+        }.get(rank_by_id.get(id(order)), "")
 
         lines.append(
-            f"{emoji} <b>{side}</b> "
-            f"${order['price']:,.0f} | "
-            f"{format_volume(order['volume'])}"
+            f"{emoji}{order['price']:,.0f}|"
+            f"{order['bar_columns']}c|"
+            f"{format_volume(order['volume']).replace('$', '')}"
             f"{rank}"
         )
 
@@ -896,6 +972,7 @@ def build_consolidated_message(all_results):
 
             rows.append(
                 f"{emoji}{order['price']:,.0f}|"
+                f"{order['bar_columns']}c|"
                 f"{format_volume(order['volume']).replace('$', '')}{star}"
             )
 

@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import requests
+import time
 
 from playwright.async_api import async_playwright
 from scraper import JS_EXTRACT_SCRIPT
@@ -901,15 +902,35 @@ def send_telegram_message(message, market, timeframe):
     token = os.environ["TELEGRAM_BOT_TOKEN"]
     chat_id = os.environ["TELEGRAM_CHAT_ID"]
 
-    response = requests.post(
-        f"https://api.telegram.org/bot{token}/sendMessage",
-        json={
-            "chat_id": chat_id,
-            "text": message,
-            "parse_mode": "HTML"
-        },
-        timeout=30
-    )
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": message,
+        "parse_mode": "HTML"
+    }
+
+    for attempt in range(2):
+        try:
+            response = requests.post(
+                url,
+                json=payload,
+                timeout=(10, 60)
+            )
+            break
+        except requests.exceptions.ConnectTimeout:
+            if attempt == 1:
+                raise
+            print(
+                f"[{market} {timeframe}] Telegram connection timed out; "
+                "retrying once."
+            )
+            time.sleep(2)
+        except requests.exceptions.ReadTimeout as error:
+            raise RuntimeError(
+                f"[{market} {timeframe}] Telegram response timed out; "
+                "delivery status is unknown, so it was not retried to avoid "
+                "sending a duplicate."
+            ) from error
 
     response.raise_for_status()
 
@@ -1050,46 +1071,6 @@ def build_consolidated_message(all_results):
         messages.append(message)
 
     return messages
-
-
-# ==================================================
-# SEND CONSOLIDATED TELEGRAM MESSAGES
-# ==================================================
-
-def send_consolidated_telegram_message(messages):
-
-    if not messages:
-        print("[CONSOLIDATED] No valid data available.")
-        return
-
-    token = os.environ["TELEGRAM_BOT_TOKEN"]
-    chat_id = os.environ["TELEGRAM_CHAT_ID"]
-
-    for index, message in enumerate(messages, 1):
-
-        response = requests.post(
-            f"https://api.telegram.org/bot{token}/sendMessage",
-            json={
-                "chat_id": chat_id,
-                "text": message,
-                "parse_mode": "HTML"
-            },
-            timeout=30
-        )
-
-        response.raise_for_status()
-
-        result = response.json()
-
-        if not result.get("ok"):
-            raise RuntimeError(
-                f"Consolidated Telegram error: {result}"
-            )
-
-        print(
-            f"[CONSOLIDATED] Message {index}/{len(messages)} sent successfully!"
-        )
-
 
 
 # ==================================================
@@ -1262,16 +1243,20 @@ async def main():
 
         if consolidated_message:
 
-            print(
-                "[CONSOLIDATED] Sending ninth Telegram message..."
-            )
+            for index, message in enumerate(consolidated_message, 1):
+                print(
+                    f"[CONSOLIDATED] Sending message "
+                    f"{index}/{len(consolidated_message)}..."
+                )
 
-            await asyncio.to_thread(
-                send_consolidated_telegram_message,
-                consolidated_message
-            )
+                await asyncio.to_thread(
+                    send_telegram_message,
+                    message,
+                    "CONSOLIDATED",
+                    f"{index}/{len(consolidated_message)}"
+                )
 
-            successful += 1
+                successful += 1
 
         else:
 
@@ -1299,8 +1284,9 @@ async def main():
 
     print("\n" + "=" * 65)
 
+    expected_messages = len(markets) * len(TIMEFRAMES) + 2
     print(
-        f"SUCCESSFUL TELEGRAM MESSAGES: {successful}/9"
+        f"SUCCESSFUL TELEGRAM MESSAGES: {successful}/{expected_messages}"
     )
 
     if errors:

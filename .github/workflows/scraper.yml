@@ -38,7 +38,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
-          playwright install --with-deps chromium
+          playwright install chromium
 
       - name: Restore CoinGlass session
         env:

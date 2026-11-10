@@ -22,11 +22,19 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Python
+        id: setup-python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
           cache-dependency-path: requirements.txt
+
+      - name: Cache Python environment
+        id: python-env-cache
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: ${{ runner.os }}-python-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements.txt') }}
 
       - name: Cache Playwright browsers
         id: playwright-cache
@@ -36,9 +44,13 @@ jobs:
           key: ${{ runner.os }}-playwright-${{ hashFiles('requirements.txt') }}
 
       - name: Install dependencies
+        if: steps.python-env-cache.outputs.cache-hit != 'true'
         run: |
-          pip install -r requirements.txt
-          playwright install chromium
+          python -m venv .venv
+          .venv/bin/python -m pip install -r requirements.txt
+
+      - name: Ensure Playwright Chromium is installed
+        run: .venv/bin/playwright install chromium
 
       - name: Restore CoinGlass session
         env:
@@ -50,4 +62,4 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python run_parallel.py
+        run: .venv/bin/python run_parallel.py

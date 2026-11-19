@@ -1026,37 +1026,6 @@ def send_telegram_message(message, market, timeframe):
 # COMPACT TWO-COLUMN MOBILE FORMAT
 # ==================================================
 
-def build_ratio_bar_line(market_data, timeframe_order, total_blocks=16):
-
-    long_vol = 0.0
-    short_vol = 0.0
-
-    for tf in timeframe_order:
-        res = market_data.get(tf)
-        if res is None or isinstance(res, BaseException):
-            continue
-        for order in res.get("whale_orders", []):
-            vol = float(order.get("volume", 0.0))
-            if vol <= 0:
-                continue
-            if order.get("side") == "LONG LIQ":
-                long_vol += vol
-            else:
-                short_vol += vol
-
-    total_vol = long_vol + short_vol
-    if total_vol <= 0:
-        return ""
-
-    long_pct = (long_vol / total_vol) * 100.0
-    short_pct = 100.0 - long_pct
-    long_blocks = max(1, min(total_blocks - 1, round((long_vol / total_vol) * total_blocks)))
-    short_blocks = total_blocks - long_blocks
-
-    bar = ("🟩" * long_blocks) + ("🟥" * short_blocks)
-    return f"L {long_pct:.0f}% {bar} {short_pct:.0f}% S"
-
-
 def build_consolidated_message(all_results):
 
     timeframe_order = ["12H", "24H", "48H", "3D", "1W", "1M"]
@@ -1157,10 +1126,6 @@ def build_consolidated_message(all_results):
                 )
 
             lines.append("")
-
-        ratio_line = build_ratio_bar_line(market_data, timeframe_order)
-        if ratio_line:
-            lines.append(ratio_line)
 
         message = (
             f"<b>{lines[0]}</b>\n"

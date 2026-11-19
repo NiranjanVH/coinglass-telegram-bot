@@ -1,8 +1,8 @@
 import asyncio
 import json
 import os
-import requests
 import time
+import requests
 
 from playwright.async_api import async_playwright
 from scraper import JS_EXTRACT_SCRIPT
@@ -30,12 +30,12 @@ VIEWPORT = {
 }
 
 TIMEFRAMES = ["48H", "12H", "24H", "3D", "1W", "1M"]
-SCRAPE_CONCURRENCY = 4
+SCRAPE_CONCURRENCY = 2
 
 CHART_SELECTOR = ".echarts-for-react"
 
 MAX_EXTRACTION_ATTEMPTS = 60
-CHART_WAIT_TIMEOUT = 20000
+CHART_WAIT_TIMEOUT = 30000
 RETRY_DELAY = 1
 
 
@@ -58,6 +58,27 @@ def format_volume(value):
 
 
 # ==================================================
+# DIAGNOSTIC DUMP
+# ==================================================
+
+async def save_debug_artifacts(page, market, timeframe, prefix="debug"):
+
+    base = f"{prefix}_{market.lower()}_{timeframe.lower()}"
+    try:
+        print(f"[{market} {timeframe}] Debug URL: {page.url}")
+        await page.screenshot(path=f"{base}.png", full_page=True)
+    except Exception as error:
+        print(f"[{market} {timeframe}] Screenshot failed: {error}")
+
+    try:
+        html = await page.content()
+        with open(f"{base}.html", "w", encoding="utf-8") as f:
+            f.write(html)
+    except Exception as error:
+        print(f"[{market} {timeframe}] HTML dump failed: {error}")
+
+
+# ==================================================
 # LEGACY VERSION LINK ACTION
 # ==================================================
 
@@ -68,12 +89,26 @@ async def click_legacy_version_link(page, market, timeframe):
         "Looking for legacy version link (a.TopBar_old__BITL7)..."
     )
 
+    if "/legacy/" in page.url:
+        print(
+            f"[{market} {timeframe}] "
+            f"Already on legacy URL ({page.url})."
+        )
+        return
+
+    link = page.locator(
+        "a.TopBar_old__BITL7, a[href*='/legacy/liquidation-heatmap']"
+    ).first
+
     clicked = False
 
-    link = page.locator("a.TopBar_old__BITL7").first
     try:
-        await link.wait_for(state="visible", timeout=5000)
-        await link.click()
+        await link.wait_for(state="visible", timeout=15000)
+        try:
+            async with page.expect_navigation(wait_until="domcontentloaded", timeout=15000):
+                await link.click()
+        except Exception:
+            await link.click()
         clicked = True
     except Exception:
         clicked = await page.evaluate(
@@ -91,13 +126,25 @@ async def click_legacy_version_link(page, market, timeframe):
     if clicked:
         print(
             f"[{market} {timeframe}] "
-            "Clicked legacy version link; waiting for page transition..."
+            "Clicked legacy version link; waiting for legacy view..."
         )
+        try:
+            await page.wait_for_url("**/legacy/**", timeout=15000)
+        except Exception:
+            pass
+        try:
+            await page.wait_for_load_state("domcontentloaded", timeout=15000)
+        except Exception:
+            pass
         await asyncio.sleep(3)
+        print(
+            f"[{market} {timeframe}] "
+            f"Post-click URL: {page.url}"
+        )
     else:
         print(
             f"[{market} {timeframe}] "
-            "Legacy version link not found; continuing on current view."
+            f"Legacy version link not found on {page.url}; continuing."
         )
 
 
@@ -584,13 +631,7 @@ async def _scrape_market_timeframe(
 
         if status is not None and status >= 400:
 
-            await page.screenshot(
-                path=(
-                    f"debug_{market.lower()}_"
-                    f"{timeframe.lower()}.png"
-                ),
-                full_page=True
-            )
+            await save_debug_artifacts(page, market, timeframe, prefix="debug")
 
             raise RuntimeError(
                 f"CoinGlass returned HTTP {status}"
@@ -598,30 +639,8 @@ async def _scrape_market_timeframe(
 
         print(
             f"[{market} {timeframe}] "
-            "Initializing page..."
+            "Switching to legacy version before waiting for chart..."
         )
-
-        chart_ready = await wait_for_chart(
-            page,
-            market,
-            timeframe,
-            timeout=60000
-        )
-
-        if not chart_ready:
-
-            await page.screenshot(
-                path=(
-                    f"debug_{market.lower()}_"
-                    f"{timeframe.lower()}.png"
-                ),
-                full_page=True
-            )
-
-            raise RuntimeError(
-                f"[{market} {timeframe}] "
-                "Chart did not appear after 60 seconds."
-            )
 
         await click_legacy_version_link(
             page,
@@ -638,17 +657,11 @@ async def _scrape_market_timeframe(
 
         if not chart_ready:
 
-            await page.screenshot(
-                path=(
-                    f"debug_{market.lower()}_"
-                    f"{timeframe.lower()}.png"
-                ),
-                full_page=True
-            )
+            await save_debug_artifacts(page, market, timeframe, prefix="debug")
 
             raise RuntimeError(
                 f"[{market} {timeframe}] "
-                "Chart did not appear after clicking legacy version link."
+                "Chart did not appear after 60 seconds."
             )
 
         await select_timeframe(
@@ -664,13 +677,7 @@ async def _scrape_market_timeframe(
         )
 
         if not chart_ready:
-            await page.screenshot(
-                path=(
-                    f"debug_failed_{market.lower()}_"
-                    f"{timeframe.lower()}.png"
-                ),
-                full_page=True
-            )
+            await save_debug_artifacts(page, market, timeframe, prefix="debug_failed")
 
             raise RuntimeError(
                 f"[{market} {timeframe}] "
@@ -747,13 +754,7 @@ async def _scrape_market_timeframe(
 
         if raw_data is None:
 
-            await page.screenshot(
-                path=(
-                    f"debug_failed_{market.lower()}_"
-                    f"{timeframe.lower()}.png"
-                ),
-                full_page=True
-            )
+            await save_debug_artifacts(page, market, timeframe, prefix="debug_failed")
 
             raise RuntimeError(
                 f"[{market} {timeframe}] {failure_reason}"
@@ -800,7 +801,7 @@ async def _scrape_market_timeframe(
 
 
 # ==================================================
-# SCRAPE ONE MARKET - FOUR PARALLEL TIMEFRAMES
+# SCRAPE ONE MARKET - PARALLEL TIMEFRAMES
 # ==================================================
 
 async def scrape_market(
@@ -1022,11 +1023,6 @@ def send_telegram_message(message, market, timeframe):
 
 # ==================================================
 # CONSOLIDATED LIQUIDATION MESSAGE
-# ==================================================
-
-
-# ==================================================
-# CONSOLIDATED LIQUIDATION MESSAGE
 # COMPACT TWO-COLUMN MOBILE FORMAT
 # ==================================================
 
@@ -1094,8 +1090,6 @@ def build_consolidated_message(all_results):
             ""
         ]
 
-        # Pair adjacent timeframes for a compact mobile layout.
-
         for first, second in [
             ("12H", "24H"),
             ("48H", "3D"),
@@ -1146,13 +1140,13 @@ def build_consolidated_message(all_results):
 
 
 # ==================================================
-# MAIN - EIGHT SCRAPERS + RETRY + CONSOLIDATED MESSAGE
+# MAIN - PARALLEL SCRAPERS + RETRY + CONSOLIDATED MESSAGE
 # ==================================================
 
 async def main():
 
     print("=" * 65)
-    print("STARTING EIGHT PARALLEL COINGLASS SCRAPERS")
+    print("STARTING PARALLEL COINGLASS SCRAPERS")
     print("=" * 65)
 
     markets = {

@@ -58,6 +58,50 @@ def format_volume(value):
 
 
 # ==================================================
+# LEGACY VERSION LINK ACTION
+# ==================================================
+
+async def click_legacy_version_link(page, market, timeframe):
+
+    print(
+        f"[{market} {timeframe}] "
+        "Looking for legacy version link (a.TopBar_old__BITL7)..."
+    )
+
+    clicked = False
+
+    link = page.locator("a.TopBar_old__BITL7").first
+    try:
+        await link.wait_for(state="visible", timeout=5000)
+        await link.click()
+        clicked = True
+    except Exception:
+        clicked = await page.evaluate(
+            """
+            () => {
+                const el = document.querySelector('a.TopBar_old__BITL7')
+                    || document.querySelector('a[href*="/legacy/liquidation-heatmap"]');
+                if (!el) return false;
+                el.click();
+                return true;
+            }
+            """
+        )
+
+    if clicked:
+        print(
+            f"[{market} {timeframe}] "
+            "Clicked legacy version link; waiting for page transition..."
+        )
+        await asyncio.sleep(3)
+    else:
+        print(
+            f"[{market} {timeframe}] "
+            "Legacy version link not found; continuing on current view."
+        )
+
+
+# ==================================================
 # TIMEFRAME SELECTORS
 # ==================================================
 
@@ -577,6 +621,34 @@ async def _scrape_market_timeframe(
             raise RuntimeError(
                 f"[{market} {timeframe}] "
                 "Chart did not appear after 60 seconds."
+            )
+
+        await click_legacy_version_link(
+            page,
+            market,
+            timeframe
+        )
+
+        chart_ready = await wait_for_chart(
+            page,
+            market,
+            timeframe,
+            timeout=60000
+        )
+
+        if not chart_ready:
+
+            await page.screenshot(
+                path=(
+                    f"debug_{market.lower()}_"
+                    f"{timeframe.lower()}.png"
+                ),
+                full_page=True
+            )
+
+            raise RuntimeError(
+                f"[{market} {timeframe}] "
+                "Chart did not appear after clicking legacy version link."
             )
 
         await select_timeframe(
